@@ -386,14 +386,20 @@ export async function parseXlsxFile(file: File): Promise<XlsxParseResult> {
     const meterPayments = connectionPaymentsByMeter.get(key) ?? [];
     const waterMeterPaid = meterPayments.reduce((sum, p) => sum + p.amount, 0);
 
-    // If no explicit Billing Balance was given, fall back to the most
-    // recent bill's total — the same "running balance" convention the rest
-    // of the app uses (each bill's own amount already folds in prior debt).
+    // If no explicit Billing Balance was given, derive it from the most recent
+    // bill — the same "running balance" convention the rest of the app uses,
+    // where each bill's own amount already folds in prior debt.
+    //
+    // Net of what was paid against that bill, which matters: taking the gross
+    // amount handed every fully-settled account an opening balance equal to its
+    // last bill, so an office that left the balance column blank for its paid-up
+    // accounts would have re-billed every one of them.
+    const latestBill = billingHistory[billingHistory.length - 1];
     const billingBalance =
       data.billingBalance > 0
         ? data.billingBalance
-        : billingHistory.length > 0
-        ? billingHistory[billingHistory.length - 1].pesoAmount
+        : latestBill
+        ? Math.max(0, Math.round((latestBill.pesoAmount - latestBill.amountPaid) * 100) / 100)
         : 0;
 
     const connectionFeeTotal = data.connectionFeeDetails?.total ?? 0;

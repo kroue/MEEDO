@@ -6,5 +6,7 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["lib/**/*.test.ts"],
+    // The xlsx parser test reads the generated workbook from the repo root.
+    root: process.cwd(),
   },
 });

@@ -27,12 +27,10 @@ import {
 } from "firebase/firestore";
 import { db } from "./firebase";
 import { logAuditEvent } from "./auditLog";
+import { monthKeyFor, ownerFieldsOf } from "./bills";
+import { sortHistoryDesc, waterChargeOf } from "../billing";
 import { getFullName } from "../utils";
-import type {
-  Concessionaire,
-  NewConcessionaireInput,
-  MonthlyBillingRecord,
-} from "./types";
+import type { Concessionaire, NewConcessionaireInput } from "./types";
 
 // ── Collection reference ───────────────────────────────────────────────────
 
@@ -171,63 +169,6 @@ export async function addConcessionaire(
     actorEmail
   );
   return docRef.id;
-}
-
-// ── UPDATE — Monthly Billing ───────────────────────────────────────────────
-
-/**
- * Append or update a monthly billing record for a concessionaire.
- *
- * Strategy: if a record for the given month already exists in the array,
- * it replaces it entirely (via a full array rewrite). If it doesn't exist,
- * it appends using arrayUnion.
- *
- * For simplicity & correctness we pass the full updated array when merging.
- */
-export async function upsertMonthlyBilling(
-  concessionaireId: string,
-  updatedHistory: MonthlyBillingRecord[]
-): Promise<void> {
-  const docRef = doc(db, CONCESSIONAIRES_COLLECTION, concessionaireId);
-  await updateDoc(docRef, {
-    billingHistory: updatedHistory,
-    updatedAt: serverTimestamp(),
-  });
-}
-
-/**
- * Append a brand-new monthly record (for a month that doesn't exist yet).
- * Uses arrayUnion to avoid overwriting existing months.
- */
-export async function addMonthlyBillingRecord(
-  concessionaireId: string,
-  record: MonthlyBillingRecord
-): Promise<void> {
-  const docRef = doc(db, CONCESSIONAIRES_COLLECTION, concessionaireId);
-  await updateDoc(docRef, {
-    billingHistory: arrayUnion(record),
-    updatedAt: serverTimestamp(),
-  });
-}
-
-// ── UPDATE — Balances ──────────────────────────────────────────────────────
-
-/**
- * Update billing/water meter balances.
- * `totalBalance` is recalculated automatically here.
- */
-export async function updateConcessionaireBalances(
-  concessionaireId: string,
-  billingBalance: number,
-  waterMeterBalance: number
-): Promise<void> {
-  const docRef = doc(db, CONCESSIONAIRES_COLLECTION, concessionaireId);
-  await updateDoc(docRef, {
-    billingBalance,
-    waterMeterBalance,
-    totalBalance: billingBalance + waterMeterBalance,
-    updatedAt: serverTimestamp(),
-  });
 }
 
 // ── UPDATE — Status & Details (New for Editing) ────────────────────────────
@@ -489,7 +430,8 @@ export async function batchImportConcessionaires(
   } = {}
 ): Promise<ImportResult> {
   const { strategy = "update", onProgress } = options;
-  const BATCH_SIZE = 499;
+  // Firestore allows 500 operations per batch; counted per operation below.
+  const BATCH_SIZE = 490;
   const errors: string[] = [];
   let imported = 0;
   let updated = 0;
@@ -521,41 +463,93 @@ export async function batchImportConcessionaires(
 
   let processed = skipped;
 
-  for (let i = 0; i < writable.length; i += BATCH_SIZE) {
-    const chunk = writable.slice(i, i + BATCH_SIZE);
-    const batch = writeBatch(db);
+  // Batches are chunked by OPERATION, not by row: each account costs one write
+  // for the parent plus one per bill, so an account with years of history can
+  // exceed Firestore's 500-op limit on its own.
+  let batch = writeBatch(db);
+  let opsInBatch = 0;
+  let pendingRows: { existingId: string | null }[] = [];
+  let batchNumber = 1;
 
-    chunk.forEach(({ row, existingId }) => {
-      const ref = existingId ? doc(concessionairesRef(), existingId) : doc(concessionairesRef());
-      if (existingId) {
-        // Merge rather than replace: an existing account may carry payments,
-        // remarks and billing history the workbook doesn't know about.
-        batch.set(
-          ref,
-          { ...row, updatedBy: actorEmail, updatedAt: serverTimestamp() },
-          { merge: true }
-        );
-      } else {
-        batch.set(ref, {
-          ...row,
-          createdBy: actorEmail,
-          updatedBy: actorEmail,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-      }
-    });
-
+  const commitBatch = async () => {
+    if (opsInBatch === 0) return;
     try {
       await batch.commit();
-      chunk.forEach(({ existingId }) => (existingId ? updated++ : imported++));
-      processed += chunk.length;
+      pendingRows.forEach(({ existingId }) => (existingId ? updated++ : imported++));
+      processed += pendingRows.length;
       onProgress?.(processed, concessionaires.length);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      errors.push(`Batch ${Math.floor(i / BATCH_SIZE) + 1}: ${msg}`);
+      errors.push(`Batch ${batchNumber}: ${msg}`);
     }
+    batch = writeBatch(db);
+    opsInBatch = 0;
+    pendingRows = [];
+    batchNumber += 1;
+  };
+
+  for (const { row, existingId } of writable) {
+    const { billingHistory = [], ...parentFields } = row;
+
+    // Bills go straight into the sub-collection rather than an array on the
+    // parent, so a freshly imported account is already in the current shape and
+    // never needs the storage migration run over it afterwards.
+    const ordered = sortHistoryDesc(billingHistory);
+    const billCost = ordered.length;
+
+    // Start a fresh batch if this account wouldn't fit in the current one.
+    if (opsInBatch > 0 && opsInBatch + billCost + 1 > BATCH_SIZE) {
+      await commitBatch();
+    }
+
+    const ref = existingId ? doc(concessionairesRef(), existingId) : doc(concessionairesRef());
+    const ownerFields = ownerFieldsOf(ref.id, row);
+
+    const summary = {
+      monthsBilled: ordered.length,
+      totalWaterCharged:
+        Math.round(ordered.reduce((sum, b) => sum + waterChargeOf(b), 0) * 100) / 100,
+      // The workbook has no water-bill payment rows — only connection-fee
+      // installments, which stay on the parent — so nothing has been collected
+      // against these bills as far as this import knows.
+      totalCollected: 0,
+      latestBill: ordered[0] ?? null,
+      previousBill: ordered[1] ?? null,
+    };
+
+    ordered.forEach((bill) => {
+      batch.set(
+        doc(collection(ref, "bills"), monthKeyFor(bill.month)),
+        { ...bill, ...ownerFields, monthKey: monthKeyFor(bill.month) },
+        { merge: true }
+      );
+      opsInBatch += 1;
+    });
+
+    const parentPayload = { ...parentFields, billingSummary: summary };
+
+    if (existingId) {
+      // Merge rather than replace: an existing account may carry payments,
+      // remarks and connection details the workbook doesn't know about.
+      batch.set(
+        ref,
+        { ...parentPayload, updatedBy: actorEmail, updatedAt: serverTimestamp() },
+        { merge: true }
+      );
+    } else {
+      batch.set(ref, {
+        ...parentPayload,
+        createdBy: actorEmail,
+        updatedBy: actorEmail,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    }
+    opsInBatch += 1;
+    pendingRows.push({ existingId });
   }
+
+  await commitBatch();
 
   logAuditEvent(
     "Data Sync",
