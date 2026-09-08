@@ -1,0 +1,182 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // These rules are the ONLY real access boundary in this system.
+    //
+    // Both apps check roles client-side after login (see AuthContext/AuthGate
+    // in the console, AuthRepository on the phone), but neither check stops
+    // anyone who talks to Firestore directly with a valid session — which is
+    // every field reader, since they hold real credentials on a device that
+    // leaves the office. Everything below is written on the assumption that
+    // an authenticated caller is hostile.
+    //
+    // Note on sign-up: while account creation runs in the browser (the default
+    // — see lib/firebase/accountBackend.ts), Identity Platform must accept
+    // self-service sign-up, so anyone holding the public web API key can mint a
+    // session. That is exactly why nothing below trusts `request.auth != null`
+    // on its own: every rule requires a `users/{uid}` role document, which only
+    // an admin can create. A self-registered account can authenticate and then
+    // reach precisely nothing.
+    //
+    // Deploying the Cloud Functions in functions/index.js and setting
+    // NEXT_PUBLIC_ACCOUNT_ADMIN_BACKEND=functions lets sign-up be switched off
+    // altogether, which closes that gap properly.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    // A caller counts as a real user of this system only if an admin has given
+    // them a role document AND that document isn't disabled.
+    //
+    // The `disabled` check is what makes revocation work without the Admin SDK.
+    // The client SDK cannot disable another Auth account, so an admin pressing
+    // "Disable" writes this flag instead; enforcing it here means a disabled
+    // account — a lost field phone, say — can no longer read or write anything,
+    // even though its Firebase Auth session technically survives.
+    function roleExists() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && userDoc().get('disabled', false) == false;
+    }
+
+    function callerRole() {
+      return userDoc().role;
+    }
+
+    function isAdmin() {
+      return roleExists() && callerRole() == "admin";
+    }
+
+    /** Console users: full admin, or counter staff. */
+    function isConsoleUser() {
+      return roleExists() && callerRole() in ["admin", "staff"];
+    }
+
+    function isFieldReader() {
+      return roleExists() && callerRole() == "field_reader";
+    }
+
+    /** Fields a caller is attempting to add or change on an existing document. */
+    function changed() {
+      return request.resource.data.diff(resource.data).affectedKeys();
+    }
+
+    // ── concessionaires ──────────────────────────────────────────────────────
+    //
+    // Read: any account with a role document. Field readers need the accounts
+    // on their route, and scoping reads per-barangay in rules would require
+    // the query itself to carry the constraint — enforced instead by only
+    // handing readers a route via users/{uid}.assignedBarangays.
+    //
+    // Write: console users have full control. Field readers may ONLY touch the
+    // billing fields uploadReading() actually writes, and may never create or
+    // delete a concessionaire. Without this a reader could zero any balance,
+    // rewrite billing history, or flip a status straight from the SDK, with
+    // nothing in auditLogs to show for it.
+
+    match /concessionaires/{concessionaireId} {
+      allow read: if roleExists();
+
+      allow create, delete: if isConsoleUser();
+
+      allow update: if isConsoleUser()
+        || (isFieldReader() && changed().hasOnly([
+              'billingHistory',
+              'billingBalance',
+              'creditBalance',
+              'totalBalance',
+              'delinquentSince',
+              'updatedAt'
+            ]));
+    }
+
+    // ── settings ─────────────────────────────────────────────────────────────
+    // orCounter / paymentOrCounter — the shared atomic counters both apps
+    // increment when minting OR numbers. Receipt-number continuity is a cash
+    // control, so the counter may only ever move forward, and only these two
+    // documents exist. `year` rolling forward resets `lastNumber` to 1, which
+    // is the intended per-year sequence.
+
+    match /settings/{settingId} {
+      allow read: if roleExists();
+
+      allow create: if roleExists()
+        && settingId in ["orCounter", "paymentOrCounter"]
+        && request.resource.data.lastNumber == 1;
+
+      allow update: if roleExists()
+        && settingId in ["orCounter", "paymentOrCounter"]
+        && (
+             // same year: strictly incrementing
+             (request.resource.data.year == resource.data.year
+               && request.resource.data.lastNumber == resource.data.lastNumber + 1)
+             // new year: sequence restarts
+             || (request.resource.data.year > resource.data.year
+               && request.resource.data.lastNumber == 1)
+           );
+
+      allow delete: if false;
+    }
+
+    // ── users ────────────────────────────────────────────────────────────────
+    // Role and profile documents. A caller may read their OWN document (both
+    // apps do this immediately after login to resolve their role, and the
+    // phone listens to it for barangay assignments); only admins may read the
+    // rest. Previously any signed-in account could enumerate every admin and
+    // staff email, real name, phone number and role — a ready-made target list
+    // for phishing exactly the accounts that hold privileges.
+    //
+    // Writes stay admin-only, which is what prevents an account from granting
+    // itself `role: "admin"`. Admins additionally may not demote or delete
+    // themselves, so the last admin can't lock everyone out by accident.
+
+    match /users/{userId} {
+      allow read: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+
+      allow create: if isAdmin();
+      // An admin may not change their own role or disable themselves — locking
+      // the last admin out of their own console helps nobody.
+      allow update: if isAdmin()
+        && (request.auth.uid != userId
+            || (request.resource.data.role == resource.data.role
+                && request.resource.data.get('disabled', false) == false));
+      allow delete: if isAdmin() && request.auth.uid != userId;
+    }
+
+    // ── auditLogs ────────────────────────────────────────────────────────────
+    // Append-only event log. Any account with a role may append — staff take
+    // payments and issue receipts, and those are precisely the events the log
+    // exists for; when writes were admin-only they were silently rejected
+    // (logAuditEvent is fire-and-forget) and cash movements went unrecorded.
+    //
+    // `user` is pinned to the caller's own identity so an entry can't be
+    // written under someone else's name, and entries can never be edited or
+    // removed once written.
+
+    match /auditLogs/{logId} {
+      allow read: if isAdmin();
+
+      allow create: if roleExists()
+        && request.resource.data.user == request.auth.token.email
+        && request.resource.data.timestamp == request.time
+        && request.resource.data.keys().hasOnly(['actionType', 'description', 'user', 'timestamp']);
+
+      allow update, delete: if false;
+    }
+
+    // Catch-all for any other collections (locked down by default)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

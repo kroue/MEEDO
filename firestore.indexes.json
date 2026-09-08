@@ -1,0 +1,13 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "concessionaires",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "barangay", "order": "ASCENDING" },
+        { "fieldPath": "firstName", "order": "ASCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

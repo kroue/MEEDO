@@ -39,3 +39,12 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Local source documents and scratch extraction output — not part of the app
+*.pptx
+*.xlsx
+pptx_text*.txt
+read_pptx.*
+
+# Cloud Functions dependencies
+/functions/node_modules
