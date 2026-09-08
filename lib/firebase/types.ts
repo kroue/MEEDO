@@ -66,6 +66,22 @@ export interface MonthlyBillingRecord {
   overdueBalance?: number;
   overdueSurcharge?: number;
   extensionFee?: number;
+  /** Advance payment applied against this bill. */
+  creditApplied?: number;
+  /** True when the reading wrapped past the meter's maximum back to zero. */
+  meterRolledOver?: boolean;
+  /**
+   * Where this bill came from. Absent means a field reading, which is all
+   * there was before the office could issue one.
+   */
+  source?: "field" | "office";
+  /** True when the office billed an estimated reading rather than a real one. */
+  estimated?: boolean;
+  /** Set when the bill has been reversed; the record stays for the audit trail. */
+  voided?: boolean;
+  voidedAt?: string;
+  voidedBy?: string;
+  voidReason?: string;
   /** Epoch millis — pay on/before this to avoid the overdue surcharge. */
   dueDateMillis?: number;
   /** What `pesoAmount` becomes if this bill isn't paid by `dueDateMillis`. */
@@ -142,6 +158,47 @@ export interface PaymentRecord {
   voidedBy?: string;
   voidReason?: string;
 }
+
+// ── Billing summary (denormalised onto the parent document) ────────────────
+
+/**
+ * Everything about an account's billing that callers need without opening the
+ * `bills` sub-collection. Deliberately fixed-size: two bill records and three
+ * running totals, however many years of history sit underneath.
+ */
+export interface BillingSummary {
+  /** Number of bills in the sub-collection. */
+  monthsBilled: number;
+  /** Lifetime water actually sold, excluding balances rolled forward. */
+  totalWaterCharged: number;
+  /** Lifetime cash received against water bills, excluding voided payments. */
+  totalCollected: number;
+  /** Most recent bill by month, or null if never billed. */
+  latestBill: MonthlyBillingRecord | null;
+  /** The bill before [latestBill] — the phone's "previous reading". */
+  previousBill: MonthlyBillingRecord | null;
+}
+
+/**
+ * Fields copied onto each bill and payment document so collection-group
+ * queries can filter and display without reading every parent. Firestore has
+ * no joins; this is the standard cost of querying across sub-collections.
+ */
+export interface DenormalisedOwner {
+  concessionaireId: string;
+  concessionaireName: string;
+  barangay: string;
+  meterNumber: string;
+  classification: string;
+}
+
+export type BillDocument = MonthlyBillingRecord &
+  DenormalisedOwner & {
+    /** Sortable month, e.g. "2026-08". Also the document ID. */
+    monthKey: string;
+  };
+
+export type PaymentDocument = PaymentRecord & DenormalisedOwner;
 
 // ── Classification ──────────────────────────────────────────────────────────
 
@@ -238,12 +295,36 @@ export interface Concessionaire {
   };
 
   // ── Billing History ──
+  /**
+   * DEPRECATED as storage — bills live in the `bills` sub-collection now.
+   *
+   * Still read (never written) so accounts not yet migrated keep working; see
+   * lib/firebase/bills.ts. Once every document has been migrated and the
+   * cleanup pass has run, this is always empty and can be dropped.
+   */
   billingHistory: MonthlyBillingRecord[];
+
+  /**
+   * Bounded, denormalised view of the `bills` sub-collection, rewritten on
+   * every bill write.
+   *
+   * It exists so the two hot paths never have to read the sub-collection:
+   * the mobile app needs only the latest two bills (this cycle's, if any, and
+   * the one before it for the previous reading), and Reports needs lifetime
+   * totals per account. Without it the phone would need one extra query per
+   * consumer on every route download — a few hundred round trips over a field
+   * connection to fetch two documents each.
+   */
+  billingSummary?: BillingSummary;
 
   // ── Meter Payments ──
   meterPayments: MeterPayment[];
 
   // ── Water Bill Payments ──
+  /**
+   * DEPRECATED as storage — payments live in the `payments` sub-collection
+   * now. Still read for unmigrated accounts; see lib/firebase/bills.ts.
+   */
   payments?: PaymentRecord[];
 
   // ── Remarks ──

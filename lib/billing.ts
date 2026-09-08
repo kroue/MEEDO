@@ -74,6 +74,25 @@ export function currentMonthStr(now: Date = new Date()): string {
   return `${MONTH_ORDER[now.getMonth()]} ${now.getFullYear()}`;
 }
 
+/**
+ * Firestore document ID for a month's bill: "AUG 2026" → "2026-08".
+ *
+ * Sortable, so a bill sub-collection's own key order is chronological and the
+ * most recent bills can be read without an index. Stable, so a corrected
+ * reading overwrites that month's bill rather than appending a second one.
+ * Mirrored by `BillingMonth.documentKey` in the field app.
+ */
+export function monthKeyFor(monthStr: string): string {
+  const [mon, year] = (monthStr ?? "").trim().split(/\s+/);
+  const idx = MONTH_ORDER.indexOf((mon || "").toUpperCase());
+  if (idx === -1 || !year || !/^\d+$/.test(year)) {
+    // Mapping every malformed month onto one ID would have them silently
+    // overwrite each other.
+    return `invalid-${(monthStr ?? "unknown").replace(/[^A-Za-z0-9]/g, "-")}`;
+  }
+  return `${year.padStart(4, "0")}-${String(idx + 1).padStart(2, "0")}`;
+}
+
 // ── Grace period / surcharge / disconnection policy ──────────────────────────
 //
 //   Day 0–15  after the account went delinquent: on-time, no surcharge.

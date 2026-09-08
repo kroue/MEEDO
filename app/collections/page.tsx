@@ -1,8 +1,10 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useConcessionaires, useConcessionaire } from "@/lib/firebase/useConcessionaires";
 import { recordPayment, voidPayment, InvalidPaymentAmountError } from "@/lib/firebase/payments";
+import { subscribeToRecentPayments } from "@/lib/firebase/bills";
+import type { PaymentDocument } from "@/lib/firebase/types";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { getFullName, formatPeso } from "@/lib/utils";
 import { sortHistoryAsc, paymentStatus, PAYMENT_STATUS_STYLES } from "@/lib/billing";
@@ -173,7 +175,25 @@ export default function CollectionsPage() {
     }
   }
 
+  // Payments live in per-account sub-collections now, so the feed is a
+  // collection-group listener rather than a scan of every concessionaire's
+  // array — it returns fifteen documents instead of the whole district.
+  const [feedPayments, setFeedPayments] = useState<PaymentDocument[] | null>(null);
+
+  useEffect(() => {
+    const unsub = subscribeToRecentPayments(setFeedPayments, console.error, 15);
+    return unsub;
+  }, []);
+
   const recentPayments = useMemo<PaymentFeedRow[]>(() => {
+    if (feedPayments && feedPayments.length > 0) {
+      return feedPayments.map((p) => ({
+        ...p,
+        concessionaireId: p.concessionaireId,
+        concessionaireName: p.concessionaireName,
+      }));
+    }
+    // Accounts not yet migrated still hold payments inline.
     const rows: PaymentFeedRow[] = [];
     concessionaires.forEach((c) => {
       (c.payments || []).forEach((p) => {
@@ -181,7 +201,7 @@ export default function CollectionsPage() {
       });
     });
     return rows.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).slice(0, 15);
-  }, [concessionaires]);
+  }, [concessionaires, feedPayments]);
 
   return (
     <div className="space-y-6">

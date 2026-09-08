@@ -18,6 +18,7 @@ import {
   isDisconnectionEligible,
   isPastGracePeriod,
   isPendingSync,
+  monthKeyFor,
   monthSortKey,
   paymentStatus,
   reversePaymentInHistory,
@@ -64,6 +65,34 @@ describe("currentMonthStr", () => {
     // abbreviation silently handed the reader an empty route for one month a
     // year, with no error on either side.
     expect(currentMonthStr(new Date(2026, 8, 1))).toBe("SEP 2026");
+  });
+});
+
+describe("monthKeyFor", () => {
+  it("produces a zero-padded, string-sortable document ID", () => {
+    // This is the bill's Firestore document ID. Sortable so the sub-collection's
+    // own key order is chronological, stable so a corrected reading overwrites
+    // that month rather than appending a second bill. Mirrored exactly by
+    // BillingMonth.documentKey in the field app.
+    expect(monthKeyFor("AUG 2026")).toBe("2026-08");
+    expect(monthKeyFor("JAN 2026")).toBe("2026-01");
+    expect(monthKeyFor("DEC 2025")).toBe("2025-12");
+    expect(monthKeyFor("DEC 2025") < monthKeyFor("JAN 2026")).toBe(true);
+    expect(monthKeyFor("SEP 2026") < monthKeyFor("OCT 2026")).toBe(true);
+  });
+
+  it("accepts the same strings currentMonthStr produces", () => {
+    expect(monthKeyFor(currentMonthStr(new Date(2026, 8, 15)))).toBe("2026-09");
+  });
+
+  it("gives unparseable months distinct IDs rather than colliding", () => {
+    // Mapping every malformed month onto one ID would have them silently
+    // overwrite each other.
+    const a = monthKeyFor("not a month");
+    const b = monthKeyFor("also bad");
+    expect(a.startsWith("invalid-")).toBe(true);
+    expect(b.startsWith("invalid-")).toBe(true);
+    expect(a).not.toBe(b);
   });
 });
 

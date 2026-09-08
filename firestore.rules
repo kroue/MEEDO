@@ -89,15 +89,51 @@ service cloud.firestore {
 
       allow create, delete: if isConsoleUser();
 
+      // `billingHistory` is still listed because accounts the storage
+      // migration hasn't reached yet keep theirs; nothing writes it any more.
       allow update: if isConsoleUser()
         || (isFieldReader() && changed().hasOnly([
               'billingHistory',
+              'billingSummary',
               'billingBalance',
               'creditBalance',
               'totalBalance',
               'delinquentSince',
               'updatedAt'
             ]));
+
+      // ── bills ──────────────────────────────────────────────────────────
+      // One document per billing cycle, keyed by month ("2026-08"), holding
+      // the itemised bill. Field readers create and correct the bill for the
+      // cycle they're reading; only console users may remove one, and even
+      // then a bill is normally voided in place rather than deleted so its OR
+      // number stays accounted for.
+      match /bills/{monthKey} {
+        allow read: if roleExists();
+        allow create, update: if isConsoleUser() || isFieldReader();
+        allow delete: if isConsoleUser();
+      }
+
+      // ── payments ───────────────────────────────────────────────────────
+      // Receipts against the water bill. Cash handling is the office's job,
+      // so readers may see them but never write one. Nothing may delete a
+      // receipt that was issued — voiding marks it in place.
+      match /payments/{orNumber} {
+        allow read: if roleExists();
+        allow create, update: if isConsoleUser();
+        allow delete: if false;
+      }
+    }
+
+    // Collection-group reads: the Billing list, Reports and the recent
+    // payments feed query across every account's sub-collections at once.
+    // Firestore evaluates these against a separate match path, so the rules
+    // above are not enough on their own.
+    match /{path=**}/bills/{monthKey} {
+      allow read: if roleExists();
+    }
+    match /{path=**}/payments/{orNumber} {
+      allow read: if isConsoleUser();
     }
 
     // ── settings ─────────────────────────────────────────────────────────────

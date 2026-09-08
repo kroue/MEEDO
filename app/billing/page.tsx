@@ -1,9 +1,11 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useConcessionaires } from "@/lib/firebase/useConcessionaires";
+import { fetchRecentBills } from "@/lib/firebase/bills";
+import type { BillDocument } from "@/lib/firebase/types";
 import { BARANGAYS, getCubicUsed } from "@/lib/firebase/types";
 import { getFullName, formatPeso } from "@/lib/utils";
 import {
@@ -83,33 +85,103 @@ export default function BillingPage() {
   const [barangayFilter, setBarangayFilter] = useState("all");
   const [monthFilter, setMonthFilter] = useState("all");
 
+  // Bills live in per-account sub-collections now, so this reads them with a
+  // collection-group query rather than walking every concessionaire's array.
+  // Bounded deliberately: this is the whole district's history, and the page
+  // filters within the window rather than pulling all of it.
+  const [subcollectionBills, setSubcollectionBills] = useState<BillDocument[] | null>(null);
+  const [billsError, setBillsError] = useState<Error | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchRecentBills(1000)
+      .then((rows) => !cancelled && setSubcollectionBills(rows))
+      .catch((e) => !cancelled && setBillsError(e as Error));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // How long each account has been carrying a balance, keyed by id — a
+  // per-account fact, not a per-bill one.
+  const overdueByAccount = useMemo(() => {
+    const map = new Map<string, number | null>();
+    concessionaires.forEach((c) => map.set(c.id, concessionaireDaysOverdue(c)));
+    return map;
+  }, [concessionaires]);
+
   const allBills = useMemo<BillRow[]>(() => {
-    if (!concessionaires) return [];
     const rows: BillRow[] = [];
+
+    const push = (
+      c: { id: string; barangay: string; meterNumber: string; classification: string; name: string },
+      h: {
+        month: string;
+        reading: number;
+        previousReading: number;
+        pesoAmount: number;
+        orNumber: string;
+        amountPaid: number;
+        billingDate?: string;
+        voided?: boolean;
+      }
+    ) => {
+      if (h.voided) return; // a reversed bill is not a bill
+      rows.push({
+        concessionaireId: c.id,
+        name: c.name,
+        barangay: c.barangay,
+        meterNumber: c.meterNumber,
+        classification: c.classification,
+        month: h.month,
+        reading: h.reading,
+        previousReading: h.previousReading,
+        consumption: getCubicUsed(h),
+        pesoAmount: h.pesoAmount,
+        waterCharge: waterChargeOf(h),
+        orNumber: h.orNumber,
+        amountPaid: h.amountPaid,
+        billingDate: h.billingDate,
+        accountOverdueDays: overdueByAccount.get(c.id) ?? null,
+      });
+    };
+
+    if (subcollectionBills && subcollectionBills.length > 0) {
+      subcollectionBills.forEach((b) =>
+        push(
+          {
+            id: b.concessionaireId,
+            name: b.concessionaireName,
+            barangay: b.barangay,
+            meterNumber: b.meterNumber,
+            classification: b.classification,
+          },
+          b
+        )
+      );
+    }
+
+    // Accounts the storage migration hasn't reached still hold their history
+    // inline; include those so the page is complete during the transition.
+    const seen = new Set(rows.map((r) => `${r.concessionaireId}|${r.month}`));
     concessionaires.forEach((c) => {
-      const accountOverdueDays = concessionaireDaysOverdue(c);
       (c.billingHistory || []).forEach((h) => {
-        rows.push({
-          concessionaireId: c.id,
-          name: getFullName(c),
-          barangay: c.barangay,
-          meterNumber: c.meterNumber,
-          classification: c.classification,
-          month: h.month,
-          reading: h.reading,
-          previousReading: h.previousReading,
-          consumption: getCubicUsed(h),
-          pesoAmount: h.pesoAmount,
-          waterCharge: waterChargeOf(h),
-          orNumber: h.orNumber,
-          amountPaid: h.amountPaid,
-          billingDate: h.billingDate,
-          accountOverdueDays,
-        });
+        if (seen.has(`${c.id}|${h.month}`)) return;
+        push(
+          {
+            id: c.id,
+            name: getFullName(c),
+            barangay: c.barangay,
+            meterNumber: c.meterNumber,
+            classification: c.classification,
+          },
+          h
+        );
       });
     });
+
     return rows.sort((a, b) => monthSortKey(b.month) - monthSortKey(a.month));
-  }, [concessionaires]);
+  }, [concessionaires, subcollectionBills, overdueByAccount]);
 
   const availableMonths = useMemo(() => {
     const set = new Set(allBills.map((b) => b.month));
@@ -172,11 +244,11 @@ export default function BillingPage() {
         </p>
       </div>
 
-      {error && (
+      {(error || billsError) && (
         <Alert variant="destructive">
           <AlertCircle className="h-4 w-4" />
           <AlertTitle>Error</AlertTitle>
-          <AlertDescription>{error.message}</AlertDescription>
+          <AlertDescription>{(error ?? billsError)?.message}</AlertDescription>
         </Alert>
       )}
 

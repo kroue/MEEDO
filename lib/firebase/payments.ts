@@ -25,9 +25,17 @@
 import { doc, runTransaction, serverTimestamp, deleteField } from "firebase/firestore";
 import { db } from "./firebase";
 import { applyPaymentToHistory, reversePaymentInHistory } from "../billing";
+import {
+  billDocRef,
+  fetchBills,
+  fetchConcessionaireRaw,
+  monthKeyFor,
+  ownerFieldsOf,
+  paymentDocRef,
+} from "./bills";
 import { logAuditEvent } from "./auditLog";
 import { getFullName } from "../utils";
-import type { PaymentRecord, MonthlyBillingRecord } from "./types";
+import type { BillingSummary, Concessionaire, PaymentRecord } from "./types";
 
 const CONCESSIONAIRES_COLLECTION = "concessionaires";
 const PAYMENT_COUNTER_DOC = "paymentOrCounter";
@@ -81,71 +89,107 @@ export async function recordPayment(
   const counterRef = doc(db, "settings", PAYMENT_COUNTER_DOC);
   const now = new Date();
 
-  const { paymentRecord, concessionaireName } = await runTransaction(db, async (transaction) => {
-    // All reads must precede all writes inside a Firestore transaction.
-    const snapshot = await transaction.get(docRef);
-    if (!snapshot.exists()) {
-      throw new Error("Concessionaire not found.");
+  // Bills live in a sub-collection now, and a transaction can't run a query —
+  // only read documents by path. So the ledger is read up front; the
+  // transaction then writes back only the bill documents whose amountPaid it
+  // actually changes, which is a handful rather than the whole history.
+  const owner = await fetchConcessionaireRaw(concessionaireId);
+  if (!owner) throw new Error("Concessionaire not found.");
+  const existingBills = await fetchBills(concessionaireId, owner.billingHistory);
+
+  const { paymentRecord, concessionaireName, touchedBills } = await runTransaction(
+    db,
+    async (transaction) => {
+      // All reads must precede all writes inside a Firestore transaction.
+      const snapshot = await transaction.get(docRef);
+      if (!snapshot.exists()) {
+        throw new Error("Concessionaire not found.");
+      }
+      const counterSnapshot = await transaction.get(counterRef);
+
+      const data = snapshot.data() as Concessionaire;
+      const concessionaireName = getFullName(data);
+      const outstandingBalance: number = data.billingBalance ?? 0;
+      const waterMeterBalance: number = data.waterMeterBalance ?? 0;
+      const existingCredit: number = data.creditBalance ?? 0;
+      const billingHistory = existingBills;
+
+      const appliedToBalance = toCentavos(Math.min(amount, outstandingBalance));
+      const creditedAmount = toCentavos(amount - appliedToBalance);
+
+      const { updatedHistory, fullyPaid } = applyPaymentToHistory(
+        billingHistory,
+        appliedToBalance,
+        outstandingBalance
+      );
+
+      // Only the rows whose paid amount actually moved need rewriting.
+      const paidBefore = new Map(billingHistory.map((b) => [b.month, b.amountPaid ?? 0]));
+      const touchedBills = updatedHistory.filter(
+        (b) => (paidBefore.get(b.month) ?? 0) !== (b.amountPaid ?? 0)
+      );
+
+      const counterYear = counterSnapshot.exists() ? counterSnapshot.data().year : null;
+      const lastNumber = counterSnapshot.exists() ? counterSnapshot.data().lastNumber ?? 0 : 0;
+      const billingYear = now.getFullYear();
+      const nextNumber = counterYear === billingYear ? lastNumber + 1 : 1;
+      const orNumber = `PMT-${billingYear}-${String(nextNumber).padStart(6, "0")}`;
+
+      transaction.set(counterRef, { year: billingYear, lastNumber: nextNumber });
+
+      const newBillingBalance = fullyPaid ? 0 : toCentavos(outstandingBalance - appliedToBalance);
+      const newCreditBalance = toCentavos(existingCredit + creditedAmount);
+      const newTotalBalance = toCentavos(newBillingBalance + waterMeterBalance);
+
+      const paymentRecord: PaymentRecord = {
+        orNumber,
+        amount,
+        date: now.toISOString(),
+        recordedBy: actorEmail,
+        balanceBefore: outstandingBalance,
+        balanceAfter: newBillingBalance,
+        appliedToBalance,
+        creditedAmount,
+      };
+
+      const ownerFields = ownerFieldsOf(concessionaireId, data);
+
+      transaction.set(paymentDocRef(concessionaireId, orNumber), {
+        ...paymentRecord,
+        ...ownerFields,
+      });
+
+      touchedBills.forEach((b) => {
+        transaction.set(
+          billDocRef(concessionaireId, b.month),
+          { ...b, ...ownerFields, monthKey: monthKeyFor(b.month) },
+          { merge: true }
+        );
+      });
+
+      const summary: BillingSummary = {
+        monthsBilled: data.billingSummary?.monthsBilled ?? billingHistory.length,
+        totalWaterCharged: data.billingSummary?.totalWaterCharged ?? 0,
+        totalCollected: toCentavos((data.billingSummary?.totalCollected ?? 0) + amount),
+        latestBill: data.billingSummary?.latestBill ?? null,
+        previousBill: data.billingSummary?.previousBill ?? null,
+      };
+
+      transaction.update(docRef, {
+        billingBalance: newBillingBalance,
+        creditBalance: newCreditBalance,
+        totalBalance: newTotalBalance,
+        billingSummary: summary,
+        // Balance cleared — the delinquency clock stops. A later bill starts a
+        // fresh one (see the mobile app's uploadReading).
+        ...(newBillingBalance <= 0 ? { delinquentSince: deleteField() } : {}),
+        updatedBy: actorEmail,
+        updatedAt: serverTimestamp(),
+      });
+
+      return { paymentRecord, concessionaireName, touchedBills };
     }
-    const counterSnapshot = await transaction.get(counterRef);
-
-    const data = snapshot.data();
-    const concessionaireName = getFullName(data as { firstName?: string; lastName?: string });
-    const outstandingBalance: number = data.billingBalance ?? 0;
-    const waterMeterBalance: number = data.waterMeterBalance ?? 0;
-    const existingCredit: number = data.creditBalance ?? 0;
-    const billingHistory = (data.billingHistory ?? []) as MonthlyBillingRecord[];
-    const payments = (data.payments ?? []) as PaymentRecord[];
-
-    const appliedToBalance = toCentavos(Math.min(amount, outstandingBalance));
-    const creditedAmount = toCentavos(amount - appliedToBalance);
-
-    const { updatedHistory, fullyPaid } = applyPaymentToHistory(
-      billingHistory,
-      appliedToBalance,
-      outstandingBalance
-    );
-
-    const counterYear = counterSnapshot.exists() ? counterSnapshot.data().year : null;
-    const lastNumber = counterSnapshot.exists() ? counterSnapshot.data().lastNumber ?? 0 : 0;
-    const billingYear = now.getFullYear();
-    const nextNumber = counterYear === billingYear ? lastNumber + 1 : 1;
-    const orNumber = `PMT-${billingYear}-${String(nextNumber).padStart(6, "0")}`;
-
-    transaction.set(counterRef, { year: billingYear, lastNumber: nextNumber });
-
-    const newBillingBalance = fullyPaid ? 0 : toCentavos(outstandingBalance - appliedToBalance);
-    const newCreditBalance = toCentavos(existingCredit + creditedAmount);
-    const newTotalBalance = toCentavos(newBillingBalance + waterMeterBalance);
-
-    const paymentRecord: PaymentRecord = {
-      orNumber,
-      amount,
-      date: now.toISOString(),
-      recordedBy: actorEmail,
-      balanceBefore: outstandingBalance,
-      balanceAfter: newBillingBalance,
-      appliedToBalance,
-      creditedAmount,
-    };
-
-    transaction.update(docRef, {
-      billingHistory: updatedHistory,
-      billingBalance: newBillingBalance,
-      creditBalance: newCreditBalance,
-      totalBalance: newTotalBalance,
-      // Rewriting the whole array rather than arrayUnion: void marks a
-      // record in place, and arrayUnion can't express that.
-      payments: [...payments, paymentRecord],
-      // Balance cleared — the delinquency clock stops. A later bill starts a
-      // fresh one (see the mobile app's uploadReading).
-      ...(newBillingBalance <= 0 ? { delinquentSince: deleteField() } : {}),
-      updatedBy: actorEmail,
-      updatedAt: serverTimestamp(),
-    });
-
-    return { paymentRecord, concessionaireName };
-  });
+  );
 
   const creditNote =
     paymentRecord.creditedAmount && paymentRecord.creditedAmount > 0
@@ -182,16 +226,28 @@ export async function voidPayment(
   const docRef = doc(db, CONCESSIONAIRES_COLLECTION, concessionaireId);
   const now = new Date();
 
+  // Read the ledger before opening the transaction — see recordPayment.
+  const owner = await fetchConcessionaireRaw(concessionaireId);
+  if (!owner) throw new Error("Concessionaire not found.");
+  const existingBills = await fetchBills(concessionaireId, owner.billingHistory);
+
   const { amount, concessionaireName } = await runTransaction(db, async (transaction) => {
     const snapshot = await transaction.get(docRef);
     if (!snapshot.exists()) throw new Error("Concessionaire not found.");
 
-    const data = snapshot.data();
-    const concessionaireName = getFullName(data as { firstName?: string; lastName?: string });
-    const payments = (data.payments ?? []) as PaymentRecord[];
-    const billingHistory = (data.billingHistory ?? []) as MonthlyBillingRecord[];
+    const paymentRef = paymentDocRef(concessionaireId, orNumber);
+    const paymentSnapshot = await transaction.get(paymentRef);
 
-    const target = payments.find((p) => p.orNumber === orNumber);
+    const data = snapshot.data() as Concessionaire;
+    const concessionaireName = getFullName(data);
+    const billingHistory = existingBills;
+
+    // Prefer the sub-collection document; fall back to the legacy array for an
+    // account the migration hasn't reached yet.
+    const legacyPayments = (data.payments ?? []) as PaymentRecord[];
+    const target = paymentSnapshot.exists()
+      ? (paymentSnapshot.data() as PaymentRecord)
+      : legacyPayments.find((p) => p.orNumber === orNumber);
     if (!target) throw new PaymentNotFoundError(orNumber);
     if (target.voided) throw new PaymentAlreadyVoidedError(orNumber);
 
@@ -208,25 +264,45 @@ export async function voidPayment(
     const restoredCredit = toCentavos(Math.max(0, currentCredit - creditedAmount));
 
     const updatedHistory = reversePaymentInHistory(billingHistory, appliedToBalance);
-
-    const updatedPayments = payments.map((p) =>
-      p.orNumber === orNumber
-        ? {
-            ...p,
-            voided: true,
-            voidedAt: now.toISOString(),
-            voidedBy: actorEmail,
-            voidReason: trimmedReason,
-          }
-        : p
+    const paidBefore = new Map(billingHistory.map((b) => [b.month, b.amountPaid ?? 0]));
+    const touchedBills = updatedHistory.filter(
+      (b) => (paidBefore.get(b.month) ?? 0) !== (b.amountPaid ?? 0)
     );
 
+    const ownerFields = ownerFieldsOf(concessionaireId, data);
+    const voidedPayment: PaymentRecord = {
+      ...target,
+      voided: true,
+      voidedAt: now.toISOString(),
+      voidedBy: actorEmail,
+      voidReason: trimmedReason,
+    };
+
+    transaction.set(paymentRef, { ...voidedPayment, ...ownerFields });
+
+    touchedBills.forEach((b) => {
+      transaction.set(
+        billDocRef(concessionaireId, b.month),
+        { ...b, ...ownerFields, monthKey: monthKeyFor(b.month) },
+        { merge: true }
+      );
+    });
+
+    const summary: BillingSummary = {
+      monthsBilled: data.billingSummary?.monthsBilled ?? billingHistory.length,
+      totalWaterCharged: data.billingSummary?.totalWaterCharged ?? 0,
+      totalCollected: toCentavos(
+        Math.max(0, (data.billingSummary?.totalCollected ?? 0) - target.amount)
+      ),
+      latestBill: data.billingSummary?.latestBill ?? null,
+      previousBill: data.billingSummary?.previousBill ?? null,
+    };
+
     transaction.update(docRef, {
-      payments: updatedPayments,
-      billingHistory: updatedHistory,
       billingBalance: restoredBalance,
       creditBalance: restoredCredit,
       totalBalance: toCentavos(restoredBalance + waterMeterBalance),
+      billingSummary: summary,
       // The account owes again, so the delinquency clock restarts — dated
       // from the reversal, not backdated, since the reversal is what made it
       // delinquent as far as the record is concerned.

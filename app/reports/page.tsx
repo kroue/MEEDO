@@ -1,7 +1,9 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useConcessionaires } from "@/lib/firebase/useConcessionaires";
+import { fetchRecentBills } from "@/lib/firebase/bills";
+import type { BillDocument } from "@/lib/firebase/types";
 import { getCubicUsed, type ConcessionaireClassification } from "@/lib/firebase/types";
 import {
   monthSortKey,
@@ -81,12 +83,15 @@ export default function ReportsPage() {
   // it went unpaid: ₱100 unpaid in June shows up again inside July's ₱213 and
   // again inside August's ₱330, for ₱643 "billed" against ₱300 of water. The
   // inflation was worst in exactly the months collections were worst.
-  // "Collected" has the mirror-image problem and needs the same care: once a
-  // rolled-forward bill is settled, `amountPaid` is marked full on every
-  // earlier row too, so summing it counts the same cash repeatedly. Actual
-  // cash received lives in `payments[]`. Accounts imported before that array
-  // existed fall back to the ledger, capped at what they were billed so the
-  // fallback can never exceed 100%.
+  // "Collected" has the mirror-image problem: once a rolled-forward bill is
+  // settled, `amountPaid` is marked full on every earlier row too, so summing
+  // it counts the same cash repeatedly.
+  //
+  // Both totals now come from `billingSummary` on the parent document, which
+  // is maintained on every bill and payment write. That is the whole point of
+  // keeping it: these figures no longer require reading a single bill, however
+  // many years of history an account has. Accounts the storage migration
+  // hasn't reached fall back to their inline arrays.
   const collectionSummary = useMemo(() => {
     const byTier = new Map<string, { category: string; billed: number; collected: number; accounts: number }>();
     concessionaires.forEach((c) => {
@@ -94,20 +99,26 @@ export default function ReportsPage() {
       const entry = byTier.get(tier) || { category: tier, billed: 0, collected: 0, accounts: 0 };
       entry.accounts += 1;
 
-      const history = c.billingHistory || [];
-      const billed = history.reduce((sum, h) => sum + waterChargeOf(h), 0);
+      if (c.billingSummary) {
+        entry.billed += c.billingSummary.totalWaterCharged;
+        entry.collected += c.billingSummary.totalCollected;
+      } else {
+        const history = c.billingHistory || [];
+        const billed = history.reduce((sum, h) => sum + waterChargeOf(h), 0);
+        const payments = c.payments || [];
+        // "Collected" from the ledger double-counts once a rolled-forward bill
+        // is settled, so it is capped at what was billed.
+        const collected =
+          payments.length > 0
+            ? payments.reduce((sum, p) => (p.voided ? sum : sum + p.amount), 0)
+            : Math.min(
+                history.reduce((sum, h) => sum + h.amountPaid, 0),
+                billed
+              );
+        entry.billed += billed;
+        entry.collected += collected;
+      }
 
-      const payments = c.payments || [];
-      const collected =
-        payments.length > 0
-          ? payments.reduce((sum, p) => (p.voided ? sum : sum + p.amount), 0)
-          : Math.min(
-              history.reduce((sum, h) => sum + h.amountPaid, 0),
-              billed
-            );
-
-      entry.billed += billed;
-      entry.collected += collected;
       byTier.set(tier, entry);
     });
     return Array.from(byTier.values());
@@ -122,21 +133,54 @@ export default function ReportsPage() {
   );
 
   // ── Monthly collections, stacked by tier ─────────────────────────────────
+  //
+  // The only figure here that genuinely needs per-month rows, so it is the one
+  // place that reads bills across accounts. Bounded: the chart shows recent
+  // months, not the whole archive.
+  const [bills, setBills] = useState<BillDocument[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchRecentBills(1000)
+      .then((rows) => !cancelled && setBills(rows))
+      .catch((e) => !cancelled && console.error("Failed to read bills", e));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const monthlyCollections = useMemo(() => {
     const byMonth = new Map<string, Record<string, number | string>>();
+
+    const add = (month: string, classification: string, charge: number) => {
+      const tier = TIER_LABELS[classification as keyof typeof TIER_LABELS] ?? classification;
+      const entry = byMonth.get(month) || { month };
+      entry[tier] = ((entry[tier] as number) || 0) + charge;
+      byMonth.set(month, entry);
+    };
+
+    if (bills && bills.length > 0) {
+      bills.forEach((b) => {
+        if (b.voided) return;
+        add(b.month, b.classification, waterChargeOf(b));
+      });
+    }
+
+    // Accounts not yet migrated still hold their history inline.
+    const seen = new Set(
+      (bills ?? []).map((b) => `${b.concessionaireId}|${b.month}`)
+    );
     concessionaires.forEach((c) => {
-      const tier = TIER_LABELS[c.classification] ?? c.classification;
       (c.billingHistory || []).forEach((h) => {
-        const entry = byMonth.get(h.month) || { month: h.month };
-        // Water sold that month, not the bill total — see collectionSummary.
-        entry[tier] = ((entry[tier] as number) || 0) + waterChargeOf(h);
-        byMonth.set(h.month, entry);
+        if (seen.has(`${c.id}|${h.month}`)) return;
+        add(h.month, c.classification, waterChargeOf(h));
       });
     });
+
     return Array.from(byMonth.values()).sort(
       (a, b) => monthSortKey(a.month as string) - monthSortKey(b.month as string)
     );
-  }, [concessionaires]);
+  }, [concessionaires, bills]);
 
   const tiers = useMemo(() => Array.from(new Set(collectionSummary.map((s) => s.category))), [collectionSummary]);
 
@@ -146,9 +190,11 @@ export default function ReportsPage() {
     let totalWithReadings = 0;
 
     concessionaires.forEach((c) => {
-      const history = c.billingHistory || [];
-      if (history.length === 0) return;
-      const latest = sortHistoryDesc(history)[0];
+      // billingSummary.latestBill is maintained on every write, so this needs
+      // no read of the bills sub-collection.
+      const latest =
+        c.billingSummary?.latestBill ?? sortHistoryDesc(c.billingHistory || [])[0] ?? null;
+      if (!latest) return;
       const consumption = getCubicUsed(latest);
       const bracket =
         counts.find((b) => consumption > b.min && consumption <= b.max) ?? counts[0];
