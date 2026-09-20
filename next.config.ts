@@ -29,7 +29,27 @@ const CSP = [
   "frame-ancestors 'self'",
 ].join("; ");
 
+// Set by `npm run cf:build`, which packages the console as a Cloudflare
+// Worker. Workers are browser-like, not Node: they have fetch and no
+// filesystem, and they forbid generating code at runtime.
+const forWorkers = process.env.BUILD_TARGET === "workers";
+
 const nextConfig: NextConfig = {
+  webpack(config, { isServer }) {
+    if (isServer && forWorkers) {
+      // Resolve the browser build of every package in the server bundle.
+      //
+      // The backend SDK ships two: the Node one talks gRPC and builds its
+      // protobuf decoders with `new Function`, which a Worker refuses — every
+      // page 500s with "Code generation from strings disallowed". The browser
+      // one talks the same service over fetch and generates nothing. Since
+      // this console renders entirely in the browser anyway, the browser build
+      // is the right one on both counts.
+      config.resolve.conditionNames = ["worker", "browser", "import", "require", "default"];
+    }
+    return config;
+  },
+
   async headers() {
     return [
       {

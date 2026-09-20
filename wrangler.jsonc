@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "meedo-admin",
+  // Entry point produced by `opennextjs-cloudflare build`.
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2026-09-18",
+  // nodejs_compat: the Next runtime and the backend SDK expect Node's APIs.
+  // global_fetch_strictly_public: fetches from the Worker go out to the public
+  // internet rather than looping back into this Worker, which is what the
+  // adapter expects.
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  "observability": {
+    "enabled": true
+  }
+}

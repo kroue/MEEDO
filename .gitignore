@@ -48,3 +48,7 @@ read_pptx.*
 
 # Cloud Functions dependencies
 /functions/node_modules
+
+# cloudflare worker build output
+/.open-next/
+/.wrangler/
