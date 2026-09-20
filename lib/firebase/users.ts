@@ -139,8 +139,70 @@ export interface ConsoleUser {
   firstName: string;
   lastName: string;
   role: "admin" | "staff";
+  /** Optional: only asked for on the Profile page. */
+  phoneNumber?: string;
   /** True when the Auth account has been disabled — see setAccountDisabled. */
   disabled: boolean;
+}
+
+/**
+ * The signed-in person's own record, for the Profile page.
+ *
+ * Read live rather than fetched once: an admin changing someone's role or
+ * disabling them should be reflected while they are looking at it, not the
+ * next time they happen to reload.
+ */
+export function subscribeToOwnProfile(
+  uid: string,
+  onData: (user: ConsoleUser | null) => void,
+  onError: (error: Error) => void
+): Unsubscribe {
+  return onSnapshot(
+    doc(db, "users", uid),
+    (snapshot) => {
+      if (!snapshot.exists()) {
+        onData(null);
+        return;
+      }
+      const data = snapshot.data();
+      onData({
+        uid: snapshot.id,
+        email: (data.email as string | undefined) ?? "",
+        firstName: (data.firstName as string | undefined) ?? "",
+        lastName: (data.lastName as string | undefined) ?? "",
+        role: (data.role as "admin" | "staff" | undefined) ?? "staff",
+        phoneNumber: (data.phoneNumber as string | undefined) ?? "",
+        disabled: (data.disabled as boolean | undefined) ?? false,
+      });
+    },
+    onError
+  );
+}
+
+/**
+ * Updates the signed-in person's own name and phone number.
+ *
+ * Only those: an account's role, its email and whether it is disabled are the
+ * admin's to change, and the security rules refuse this write if it touches
+ * anything else — so nobody can promote themselves by editing their profile.
+ */
+export async function updateOwnProfile(
+  uid: string,
+  details: { firstName: string; lastName: string; phoneNumber: string },
+  actorEmail: string
+): Promise<void> {
+  const firstName = details.firstName.trim();
+  const lastName = details.lastName.trim();
+  if (!firstName || !lastName) {
+    throw new Error("First and last name are required.");
+  }
+
+  await setDoc(
+    doc(db, "users", uid),
+    { firstName, lastName, phoneNumber: details.phoneNumber.trim() },
+    { merge: true }
+  );
+  logAuditEvent("Account Update", `Updated their own profile details.`, actorEmail);
 }
 
 /** Realtime list of every admin-console account (admin + staff), for the Team page. */

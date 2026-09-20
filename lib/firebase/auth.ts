@@ -15,9 +15,12 @@
  */
 
 import {
+  EmailAuthProvider,
   onAuthStateChanged,
+  reauthenticateWithCredential,
   signInWithEmailAndPassword,
   signOut as firebaseSignOut,
+  updatePassword,
   type User,
   type Unsubscribe,
 } from "firebase/auth";
@@ -61,4 +64,48 @@ export function displayNameFor(user: User): string {
   if (user.displayName) return user.displayName;
   if (user.email) return user.email.split("@")[0];
   return "Admin";
+}
+
+export class WrongPasswordError extends Error {
+  constructor() {
+    super("That isn't your current password.");
+    this.name = "WrongPasswordError";
+  }
+}
+
+/**
+ * Changes the signed-in person's own password.
+ *
+ * The current password is required and checked first. Sign-in alone is not
+ * enough: a session left open at a counter is exactly the situation where
+ * someone else would change the password and take the account.
+ */
+export async function changeOwnPassword(
+  currentPassword: string,
+  newPassword: string,
+  minLength: number
+): Promise<void> {
+  const user = auth.currentUser;
+  if (!user || !user.email) {
+    throw new Error("Your session has expired. Sign in again and retry.");
+  }
+  if (newPassword.length < minLength) {
+    throw new Error(`The new password must be at least ${minLength} characters.`);
+  }
+  if (newPassword === currentPassword) {
+    throw new Error("The new password is the same as the current one.");
+  }
+
+  try {
+    await reauthenticateWithCredential(user, EmailAuthProvider.credential(user.email, currentPassword));
+  } catch (e) {
+    const code = (e as { code?: string })?.code ?? "";
+    if (code === "auth/wrong-password" || code === "auth/invalid-credential") {
+      throw new WrongPasswordError();
+    }
+    throw e;
+  }
+
+  await updatePassword(user, newPassword);
+  logAuditEvent("Account Update", "Changed their own password.", user.email);
 }

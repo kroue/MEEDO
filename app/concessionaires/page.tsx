@@ -58,6 +58,7 @@ import {
 import { useConcessionaires } from "@/lib/firebase/useConcessionaires";
 import { addConcessionaire, updateConcessionaireDetails } from "@/lib/firebase/concessionaires";
 import { useAuth } from "@/lib/auth/AuthContext";
+import { usePreferences } from "@/lib/usePreferences";
 import {
   BARANGAYS,
   CONCESSIONAIRE_CLASSIFICATIONS,
@@ -155,7 +156,15 @@ export default function ConcessionairesPage() {
   // Staff can add accounts too, but theirs wait for an admin's approval.
   const canAdd = role === "admin" || role === "staff";
   const [notice, setNotice] = useState<string | null>(null);
-  const [selectedBarangay, setSelectedBarangay] = useState<string | null>(null);
+  // Opens on whatever barangay this PC chose in Settings, until someone picks
+  // another. Derived rather than seeded into state: the setting is read from an
+  // external store, which starts at its default during hydration and only then
+  // reports what this PC actually chose — a seeded initial value would miss it.
+  const preferences = usePreferences();
+  const [chosenBarangay, setChosenBarangay] = useState<string | null | undefined>(undefined);
+  const selectedBarangay =
+    chosenBarangay === undefined ? preferences.startingBarangay || null : chosenBarangay;
+  const setSelectedBarangay = setChosenBarangay;
   const [search, setSearch] = useState("");
   const [sheetOpen, setSheetOpen] = useState(false);
   const [editData, setEditData] = useState<Concessionaire | null>(null);

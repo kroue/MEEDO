@@ -286,10 +286,18 @@ service cloud.firestore {
       allow create: if isAdmin();
       // An admin may not change their own role or disable themselves — locking
       // the last admin out of their own console helps nobody.
-      allow update: if isAdmin()
+      //
+      // Anyone may edit their own name and phone number on the Profile page,
+      // and nothing else: a role, an email or a disabled flag stays the
+      // admin's to set, so an account cannot promote itself by editing its own
+      // profile.
+      allow update: if (isAdmin()
         && (request.auth.uid != userId
             || (request.resource.data.role == resource.data.role
-                && request.resource.data.get('disabled', false) == false));
+                && request.resource.data.get('disabled', false) == false)))
+        || (roleExists()
+            && request.auth.uid == userId
+            && changed().hasOnly(['firstName', 'lastName', 'phoneNumber']));
       allow delete: if isAdmin() && request.auth.uid != userId;
     }
 

@@ -12,6 +12,7 @@
 
 import { useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
+import { usePreferences } from "@/lib/usePreferences";
 import {
   DEFAULT_PAGE_SIZE,
   PAGE_SIZE_OPTIONS,
@@ -43,8 +44,14 @@ export interface Paged<T> {
  * filtering a long list down while on a later page simply shows the last page
  * instead of an empty one.
  */
-export function usePagination<T>(items: T[], pageSize = DEFAULT_PAGE_SIZE): Paged<T> {
-  const [size, setPageSize] = useState(pageSize);
+export function usePagination<T>(items: T[], pageSize?: number): Paged<T> {
+  // Unless a caller asked for a particular size, this PC's setting decides —
+  // until someone picks another size from the control, which holds for as long
+  // as they are on the page.
+  const preferences = usePreferences();
+  const [chosenSize, setPageSize] = useState<number | null>(null);
+  const size = chosenSize ?? pageSize ?? preferences.rowsPerPage;
+
   const [requestedPage, setPage] = useState(1);
 
   const total = items.length;

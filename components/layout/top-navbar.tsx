@@ -137,11 +137,17 @@ export function TopNavbar() {
                 {email || "My Account"}
               </DropdownMenuLabel>
               <DropdownMenuSeparator className="bg-slate-100" />
-              <DropdownMenuItem className="text-xs text-slate-900 focus:bg-slate-50 focus:text-slate-900 cursor-pointer">
+              <DropdownMenuItem
+                onClick={() => router.push("/profile")}
+                className="text-xs text-slate-900 focus:bg-slate-50 focus:text-slate-900 cursor-pointer"
+              >
                 <User className="mr-2 h-3.5 w-3.5" />
                 Profile
               </DropdownMenuItem>
-              <DropdownMenuItem className="text-xs text-slate-900 focus:bg-slate-50 focus:text-slate-900 cursor-pointer">
+              <DropdownMenuItem
+                onClick={() => router.push("/settings")}
+                className="text-xs text-slate-900 focus:bg-slate-50 focus:text-slate-900 cursor-pointer"
+              >
                 <Settings className="mr-2 h-3.5 w-3.5" />
                 Settings
               </DropdownMenuItem>
