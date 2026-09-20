@@ -1,10 +1,14 @@
 # Deploying the console
 
-There are two ways this console is deployed, and they solve different problems:
+Three ways, in the order they are worth reaching for:
 
-- **[Cloudflare Workers](#hosted-on-cloudflare-workers)** — Cloudflare builds
-  from the GitHub repository and hosts it. Nothing runs in the office; every PC
-  reaches the same address. This is the simpler one to keep alive.
+- **[Vercel](#hosted-on-vercel)** — builds from the GitHub repository and hosts
+  it. Nothing to configure: this console is a Next.js app and Vercel runs those
+  as they are. Start here.
+- **[Cloudflare Workers](#hosted-on-cloudflare-workers)** — also builds from the
+  repository, but a Worker is not Node, so the console has to be repackaged for
+  it and a few things have to be bent to fit. Kept here because it works, not
+  because it is easier.
 - **[A tunnel from an office PC](#running-the-console-in-the-office)** — the
   console runs on a machine in the office and Cloudflare publishes it. Worth it
   only if the app has to stay on office hardware.
@@ -12,6 +16,54 @@ There are two ways this console is deployed, and they solve different problems:
 Either way the records live in the cloud database, and either way staff install
 the console as a desktop app from the address, which needs HTTPS — both of
 these provide it.
+
+---
+
+## Hosted on Vercel
+
+Nothing in the repository needs changing: Vercel builds Next.js apps the way
+this one is written, including the pages rendered per request.
+
+### 1. Import the repository
+
+**vercel.com → Add New → Project → Import** `kroue/MEEDO`. Leave the framework
+preset, build command and output directory as detected.
+
+### 2. Set the variables
+
+**Settings → Environment Variables**, ticked for Production, Preview and
+Development. Next bakes these into the JavaScript at build time, so a build
+without them produces a console that loads and then refuses to start:
+
+```
+NEXT_PUBLIC_FIREBASE_API_KEY
+NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN
+NEXT_PUBLIC_FIREBASE_PROJECT_ID
+NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET
+NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID
+NEXT_PUBLIC_FIREBASE_APP_ID
+NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID
+```
+
+Copy the values from `.env.local`. They are the public web config — visible in
+the browser by design. What protects the records is the security rules.
+
+### 3. Deploy, then let the sign-in know its address
+
+Once the first deployment finishes, add the address Vercel gives you — and any
+custom domain — under **Firebase console → Authentication → Settings →
+Authorized domains**. Until then the console loads and every sign-in is
+refused.
+
+### 4. Install it on the office PCs
+
+Open the address in Edge on each PC: the install page appears, and **Install
+MEEDO Admin** puts it on the desktop and in the Start menu.
+
+### After that
+
+Every push to `master` deploys itself. A pull request gets its own preview
+address, which is a safe place to try a change before the office sees it.
 
 ---
 
