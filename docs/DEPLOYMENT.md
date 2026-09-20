@@ -1,3 +1,83 @@
+# Deploying the console
+
+There are two ways this console is deployed, and they solve different problems:
+
+- **[Cloudflare Workers](#hosted-on-cloudflare-workers)** — Cloudflare builds
+  from the GitHub repository and hosts it. Nothing runs in the office; every PC
+  reaches the same address. This is the simpler one to keep alive.
+- **[A tunnel from an office PC](#running-the-console-in-the-office)** — the
+  console runs on a machine in the office and Cloudflare publishes it. Worth it
+  only if the app has to stay on office hardware.
+
+Either way the records live in the cloud database, and either way staff install
+the console as a desktop app from the address, which needs HTTPS — both of
+these provide it.
+
+---
+
+## Hosted on Cloudflare Workers
+
+The console renders some pages per request — an account, a bill, a printed
+receipt — so it is not a folder of files that can be uploaded. `npm run cf:build`
+packages it into a Worker (see `open-next.config.ts` and `wrangler.jsonc`), with
+the static files served from Cloudflare's edge alongside it.
+
+### Settings in the dashboard
+
+| Setting | Value |
+|---|---|
+| Build command | `npm run cf:build` |
+| Deploy command | `npx wrangler deploy` |
+| Worker name | `meedo-admin` (from `wrangler.jsonc` — rename there if you use another) |
+
+### Variables the build needs
+
+Next bakes these into the JavaScript **at build time**, so they must be set on
+the build environment, not only at runtime. Copy the values from `.env.local`:
+
+```
+NEXT_PUBLIC_FIREBASE_API_KEY
+NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN
+NEXT_PUBLIC_FIREBASE_PROJECT_ID
+NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET
+NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID
+NEXT_PUBLIC_FIREBASE_APP_ID
+NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID
+```
+
+They are the public web config — visible in the browser by design. What
+protects the records is the security rules, not these values.
+
+Without them the build still succeeds, and the console then refuses to start in
+the browser saying which variables are missing.
+
+### Then let the sign-in know its address
+
+Firebase Authentication refuses sign-ins from an address it doesn't recognise,
+so the console will load and nobody will be able to log in until you add the
+deployed hostname under **Authentication → Settings → Authorized domains**.
+
+### Things worth knowing
+
+- **"Retry deployment" rebuilds the same commit**, not the newest one. After
+  pushing a fix, start a fresh deployment or push again — retrying will keep
+  failing on the old code.
+- **The build uses webpack, not Turbopack**, and takes a minute or two longer
+  because of it. The Worker needs a webpack resolution step (browser builds of
+  the backend SDK, which a Worker can run and the Node ones it cannot), and
+  Turbopack does not run it.
+- **`npm warn allow-scripts` in the log is fine.** Those packages ship their
+  binaries as platform packages rather than relying on install scripts.
+
+### Checking a change before pushing it
+
+```bash
+npm run cf:build     # package it exactly as Cloudflare does
+npx wrangler dev     # run that Worker locally, http://localhost:8787
+```
+
+---
+
 # Running the console in the office
 
 The console runs on one office PC and is reached by the other machines over a
