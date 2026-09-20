@@ -1,14 +1,20 @@
 "use client";
 
-import React, { useState } from "react";
+import { userMessage } from "@/lib/userMessage";
+import React, { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, Edit, Loader2, AlertCircle, FileText, CheckCircle2, XCircle, Plug } from "lucide-react";
+import { ArrowLeft, Edit, Loader2, AlertCircle, FileText, CheckCircle2, XCircle, Plug, Truck } from "lucide-react";
 import { useConcessionaire } from "@/lib/firebase/useConcessionaires";
 import { addRemark } from "@/lib/firebase/concessionaires";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ConcessionaireDialog } from "@/components/ConcessionaireDialog";
+import { ReconnectionDialog } from "@/components/ReconnectionDialog";
+import { isOpenRequest, subscribeToAccountRequests } from "@/lib/firebase/requests";
+import type { ServiceRequest } from "@/lib/firebase/types";
+import { RECONNECTION_FEE, canRequestReconnection, isAwaitingFirstConnection } from "@/lib/billing";
+import { formatPeso } from "@/lib/utils";
 import { getFullName } from "@/lib/utils";
 import { useAuth } from "@/lib/auth/AuthContext";
 
@@ -23,6 +29,23 @@ export default function ConcessionaireDetailsPage() {
   const [newRemark, setNewRemark] = useState("");
   const [isAddingRemark, setIsAddingRemark] = useState(false);
   const [remarkError, setRemarkError] = useState<string | null>(null);
+  const [reconnectOpen, setReconnectOpen] = useState(false);
+  const [openRequests, setOpenRequests] = useState<ServiceRequest[]>([]);
+
+  useEffect(() => {
+    if (!id) return;
+    return subscribeToAccountRequests(
+      id,
+      (rows) => setOpenRequests(rows.filter(isOpenRequest)),
+      (e) => console.warn("Couldn't load pending requests for this account", e)
+    );
+  }, [id]);
+
+  const reconnection = openRequests.find((r) => r.kind === "RECONNECTION");
+  // A brand new account is DISCONNECTED because it has never been connected —
+  // that is a connection to set up, not a line to restore.
+  const awaitingFirstConnection = concessionaire ? isAwaitingFirstConnection(concessionaire) : false;
+  const reconnectable = concessionaire ? canRequestReconnection(concessionaire) : false;
 
   async function handleAddRemark() {
     if (!newRemark.trim() || !concessionaire) return;
@@ -37,7 +60,7 @@ export default function ConcessionaireDetailsPage() {
       setNewRemark("");
     } catch (err) {
       console.error(err);
-      setRemarkError(err instanceof Error ? err.message : "Failed to add the remark.");
+      setRemarkError(userMessage(err, "Failed to add the remark."));
     } finally {
       setIsAddingRemark(false);
     }
@@ -58,7 +81,7 @@ export default function ConcessionaireDetailsPage() {
         <div className="rounded-xl border border-red-200 bg-red-50 p-6 flex flex-col items-center">
           <AlertCircle className="h-10 w-10 text-red-500 mb-3" />
           <h2 className="text-lg font-bold text-red-700">Error Loading Details</h2>
-          <p className="text-sm text-red-600 mt-1 mb-4">{error.message}</p>
+          <p className="text-sm text-red-600 mt-1 mb-4">{userMessage(error)}</p>
           <Button variant="outline" onClick={() => router.push("/concessionaires")}>
             <ArrowLeft className="h-4 w-4 mr-2" />
             Back to Concessionaires
@@ -137,6 +160,12 @@ export default function ConcessionaireDetailsPage() {
             <div className="p-6">
               <div className="grid grid-cols-2 gap-6">
                 <div>
+                  <p className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-1">Account Number</p>
+                  <code className="text-base font-mono font-bold text-slate-800 bg-slate-100 px-2 py-0.5 rounded">
+                    {concessionaire.accountNumber || "—"}
+                  </code>
+                </div>
+                <div>
                   <p className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-1">Meter Number</p>
                   <code className="text-base font-mono font-bold text-slate-800 bg-slate-100 px-2 py-0.5 rounded">
                     {concessionaire.meterNumber}
@@ -166,6 +195,48 @@ export default function ConcessionaireDetailsPage() {
                   </div>
                 )}
               </div>
+
+              {awaitingFirstConnection && (
+                <div className="mt-6 flex flex-col gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-800">No connection yet</p>
+                    <p className="text-xs text-slate-600">
+                      This account has never been connected, so there is nothing to reconnect. Set
+                      up its connection fee to put it in service.
+                    </p>
+                  </div>
+                  <Link href={`/connections/${concessionaire.id}`}>
+                    <Button variant="outline" className="border-slate-200 bg-white">
+                      <Plug className="mr-2 h-4 w-4 text-sky-500" />
+                      Set up connection
+                    </Button>
+                  </Link>
+                </div>
+              )}
+
+              {reconnectable && (
+                <div className="mt-6 flex flex-col gap-3 rounded-xl border border-sky-100 bg-sky-50/60 p-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-800">Reconnection</p>
+                    <p className="text-xs text-slate-600">
+                      {reconnection
+                        ? reconnection.status === "PENDING"
+                          ? `Requested by ${reconnection.requestedBy} — waiting for an admin to send a crew.`
+                          : "Approved — a crew is going out. An admin marks the account connected once the water is back on."
+                        : `${formatPeso(RECONNECTION_FEE)} is collected at the counter, then an admin sends someone to reconnect the line.`}
+                    </p>
+                  </div>
+                  {!reconnection && (
+                    <Button
+                      className="bg-sky-600 text-white hover:bg-sky-700"
+                      onClick={() => setReconnectOpen(true)}
+                    >
+                      <Truck className="mr-2 h-4 w-4" />
+                      Request reconnection
+                    </Button>
+                  )}
+                </div>
+              )}
 
               {Array.isArray(concessionaire.remarks) && concessionaire.remarks.length > 0 && (
                 <div className="mt-6 p-4 rounded-xl bg-amber-50 border border-amber-100">
@@ -243,6 +314,13 @@ export default function ConcessionaireDetailsPage() {
           </div>
         </div>
       </div>
+
+      <ReconnectionDialog
+        concessionaire={concessionaire}
+        open={reconnectOpen}
+        onClose={() => setReconnectOpen(false)}
+        onSubmitted={refresh}
+      />
 
       {/* Edit Modal */}
       {editOpen && (

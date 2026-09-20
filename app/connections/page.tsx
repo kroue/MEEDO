@@ -1,5 +1,6 @@
 "use client";
 
+import { userMessage } from "@/lib/userMessage";
 import { useState } from "react";
 import {
   Card,
@@ -36,7 +37,9 @@ import {
 } from "@/lib/firebase/types";
 import { formatPeso, getFullName } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
 import { NewConnectionDialog } from "@/components/NewConnectionDialog";
+import { Pagination, usePagination } from "@/components/ui/pagination";
 
 function SkeletonRow() {
   return (
@@ -124,6 +127,8 @@ export default function ConnectionsPage() {
     );
   });
 
+  const pagedConcessionaires = usePagination(filteredConcessionaires);
+
   return (
     <div className="space-y-6 max-w-[1400px] mx-auto p-4 md:p-8">
       {/* Header */}
@@ -150,23 +155,40 @@ export default function ConnectionsPage() {
         <CardContent className="p-0">
           {/* Toolbar */}
           <div className="flex flex-col sm:flex-row sm:items-center gap-4 p-4 border-b border-slate-100 bg-white rounded-t-xl">
-            <div className="flex items-center gap-3 flex-1">
-              <div className="relative flex-1 max-w-sm">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
-                <Input
-                  placeholder="Search by name, meter, or purok..."
-                  className="pl-9 bg-slate-50/50 border-slate-200 focus-visible:ring-sky-500 transition-shadow h-9 text-sm"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                />
+            <div className="flex items-end gap-3 flex-1">
+              <div className="relative flex-1 max-w-sm space-y-1.5">
+                <Label htmlFor="connections-search" className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                  Search
+                </Label>
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
+                  <Input
+                    id="connections-search"
+                    placeholder="Search by name, meter, or purok..."
+                    className="pl-9 bg-slate-50/50 border-slate-200 focus-visible:ring-sky-500 transition-shadow h-9 text-sm"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                  />
+                </div>
               </div>
-              <div className="flex items-center gap-2 max-w-[200px] w-full">
+              <div className="max-w-[200px] w-full space-y-1.5">
+                <Label htmlFor="connections-barangay" className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                  Barangay
+                </Label>
                 <Select
                   value={selectedBarangay || "all"}
                   onValueChange={setSelectedBarangay}
                 >
-                  <SelectTrigger className="h-9 text-sm bg-white border-slate-200">
-                    <SelectValue placeholder="All Barangays" />
+                  <SelectTrigger id="connections-barangay" className="h-9 w-full text-sm bg-white border-slate-200">
+                    <SelectValue>
+                      {(value) =>
+                        !value || value === "all"
+                          ? "All barangays"
+                          : value === "CG"
+                            ? "Cebuano Group"
+                            : String(value)
+                      }
+                    </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all" className="text-sm font-medium">All Barangays</SelectItem>
@@ -206,7 +228,7 @@ export default function ConnectionsPage() {
                     <TableCell colSpan={4} className="h-32 text-center">
                       <div className="flex flex-col items-center justify-center text-red-500">
                         <AlertCircle className="h-8 w-8 mb-2" />
-                        <p className="text-sm font-medium">{error.message}</p>
+                        <p className="text-sm font-medium">{userMessage(error)}</p>
                       </div>
                     </TableCell>
                   </TableRow>
@@ -217,13 +239,14 @@ export default function ConnectionsPage() {
                     </TableCell>
                   </TableRow>
                 ) : (
-                  filteredConcessionaires.map((c) => (
+                  pagedConcessionaires.rows.map((c) => (
                     <ConcessionaireRow key={c.id} concessionaire={c} />
                   ))
                 )}
               </TableBody>
             </Table>
           </div>
+          <Pagination paged={pagedConcessionaires} noun="connections" className="mt-3" />
         </CardContent>
       </Card>
 

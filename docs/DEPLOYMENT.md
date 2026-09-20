@@ -1,0 +1,151 @@
+# Running the console in the office
+
+The console runs on one office PC and is reached by the other machines over a
+Cloudflare Tunnel. The tunnel makes an **outbound** connection to Cloudflare, so
+nothing has to be opened on the office firewall and the PC needs no fixed public
+IP. Cloudflare terminates HTTPS, which is what lets staff install the console as
+a desktop app — browsers only offer that over `https://`.
+
+```
+Office PC                          Cloudflare                     Staff PCs
+┌──────────────────────┐           ┌──────────┐                   ┌─────────┐
+│ next start  :3000    │◀─────────▶│  tunnel  │◀───── https ─────▶│  Edge   │
+│ cloudflared (service)│  outbound │   edge    │   meedo.example   │ (app)   │
+└──────────────────────┘           └──────────┘                   └─────────┘
+```
+
+The records themselves stay where they are — in the cloud database — so the
+office PC being off means the console is unreachable, not that anything is lost.
+
+---
+
+## What you need first
+
+| Thing | Why | Who |
+|---|---|---|
+| A Cloudflare account (free) | Runs the tunnel | You |
+| A domain in that account | Gives a fixed address like `meedo.example.ph`. Without one the tunnel gets a random address that changes on every restart, which is no good for staff | You |
+| `cloudflared` on the office PC | The tunnel itself | Installed once |
+| The console built and running | What the tunnel points at | `npm run build` then `npm start` |
+
+> A domain is the one thing with a cost — roughly ₱600–1,200 a year. If the
+> office already has one for its email or website, it can be used: only the
+> subdomain (`meedo.`) is taken, the rest is untouched.
+
+---
+
+## 1. Install the tunnel
+
+```powershell
+winget install --id Cloudflare.cloudflared
+```
+
+Close and reopen the terminal afterwards so `cloudflared` is on the PATH.
+
+## 2. Sign in and create the tunnel
+
+```powershell
+cloudflared tunnel login
+```
+
+This opens a browser. Sign in and pick the domain the console should sit under.
+
+```powershell
+cloudflared tunnel create meedo-console
+cloudflared tunnel route dns meedo-console meedo.<your-domain>
+```
+
+The first command prints a tunnel ID and writes a credentials file under
+`C:\Users\<you>\.cloudflared\`. The second points the address at it.
+
+## 3. Point the tunnel at the console
+
+Copy `deploy/cloudflared-config.yml` from this repository to
+`C:\Users\<you>\.cloudflared\config.yml` and fill in the two placeholders — the
+tunnel ID and the hostname.
+
+## 4. Run both as services
+
+So the console survives a reboot and doesn't depend on anyone staying logged in.
+
+**The tunnel:**
+
+```powershell
+cloudflared service install
+```
+
+**The console:** register `deploy\start-console.cmd` as a scheduled task that
+runs at startup, as the machine account:
+
+```powershell
+schtasks /create /tn "MEEDO Console" /tr "\"C:\path\to\water-billing-admin\deploy\start-console.cmd\"" /sc onstart /ru SYSTEM /rl HIGHEST /f
+schtasks /run /tn "MEEDO Console"
+```
+
+## 5. Let the sign-in know its new address
+
+Firebase Authentication refuses sign-ins from an address it doesn't recognise,
+so the console will load but nobody can log in until you add it:
+
+**Firebase console → Authentication → Settings → Authorized domains → Add
+domain** → `meedo.<your-domain>`.
+
+## 6. Check it
+
+From another PC, open `https://meedo.<your-domain>`. You should get the install
+page, then be able to sign in. Install it from there: **⋯ → Apps → Install this
+site as an app**.
+
+---
+
+## Putting a lock on the door
+
+The tunnel address is public: anyone who knows it reaches the sign-in page. The
+records are protected by the security rules and by needing an account, but for a
+government office it is worth not showing the door at all.
+
+**Cloudflare Zero Trust → Access → Applications → Add an application** →
+Self-hosted → your hostname → policy: *Allow* → *Emails* → list the staff
+addresses. They then get a one-time code by email before the console even loads.
+Free for up to 50 users.
+
+---
+
+## Shipping an update
+
+The console is a **built** app: editing the code changes nothing until it is
+rebuilt and restarted. This is the step that has caught us out before.
+
+```powershell
+cd C:\path\to\water-billing-admin
+git pull                 # if the code comes from the repository
+npm ci                   # only when dependencies changed
+npm run build
+schtasks /end /tn "MEEDO Console"
+schtasks /run /tn "MEEDO Console"
+```
+
+`deploy\update-console.cmd` does all of that in one go.
+
+Then, in the Cloudflare dashboard, **Caching → Configuration → Purge
+Everything**, so no PC is served yesterday's files.
+
+---
+
+## When something is wrong
+
+| What you see | Usually means |
+|---|---|
+| The address doesn't resolve | The DNS route wasn't created, or the domain isn't on Cloudflare |
+| "Error 1033" / tunnel error page | `cloudflared` isn't running on the office PC |
+| The page loads but sign-in fails | The hostname isn't in Firebase's authorized domains (step 5) |
+| Staff see an old version | The console wasn't rebuilt, or Cloudflare's cache wasn't purged |
+| No install option in Edge | Not on `https://`, or the service worker didn't register — check the browser console |
+
+Useful checks on the office PC:
+
+```powershell
+cloudflared tunnel info meedo-console     # is the tunnel connected
+curl http://localhost:3000/login          # is the console itself up
+Get-Service cloudflared                   # is the service running
+```

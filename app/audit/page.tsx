@@ -1,5 +1,6 @@
 "use client";
 
+import { userMessage } from "@/lib/userMessage";
 import { useEffect, useMemo, useState } from "react";
 import {
   Card,
@@ -9,6 +10,8 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Label } from "@/components/ui/label";
+import { Pagination, usePagination } from "@/components/ui/pagination";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -113,6 +116,8 @@ export default function AuditPage() {
     });
   }, [logs, search, typeFilter]);
 
+  const pagedLogs = usePagination(filteredLogs);
+
   const actionTypeCounts = useMemo(
     () =>
       logs.reduce<Record<string, number>>((acc, log) => {
@@ -154,7 +159,7 @@ export default function AuditPage() {
         <Alert variant="destructive">
           <AlertCircle className="h-4 w-4" />
           <AlertTitle>Error</AlertTitle>
-          <AlertDescription>{error.message}</AlertDescription>
+          <AlertDescription>{userMessage(error)}</AlertDescription>
         </Alert>
       )}
 
@@ -179,19 +184,29 @@ export default function AuditPage() {
       {/* Search & Filter */}
       <Card>
         <CardContent className="pt-6">
-          <div className="flex flex-col gap-3 sm:flex-row">
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-              <Input
-                placeholder="Search by description or user..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="pl-9 text-sm"
-              />
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+            <div className="flex-1 space-y-1.5">
+              <Label htmlFor="audit-search" className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                Search
+              </Label>
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <Input
+                  id="audit-search"
+                  placeholder="Search by description or user..."
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className="pl-9 text-sm"
+                />
+              </div>
             </div>
+            <div className="space-y-1.5">
+            <Label htmlFor="audit-type" className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+              Action type
+            </Label>
             <Select value={typeFilter} onValueChange={(v) => setTypeFilter(v ?? "all")}>
-              <SelectTrigger className="w-full sm:w-[200px] text-sm">
-                <SelectValue placeholder="Filter by action type" />
+              <SelectTrigger id="audit-type" className="w-full sm:w-[200px] text-sm">
+                <SelectValue>{(value) => (value === "all" ? "All action types" : String(value))}</SelectValue>
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Action Types</SelectItem>
@@ -202,6 +217,7 @@ export default function AuditPage() {
                 ))}
               </SelectContent>
             </Select>
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -258,7 +274,7 @@ export default function AuditPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredLogs.map((log) => {
+                {pagedLogs.rows.map((log) => {
                   const config = actionTypeConfig[log.actionType];
                   const ActionIcon = config.icon;
                   return (
@@ -284,6 +300,7 @@ export default function AuditPage() {
               </TableBody>
             </Table>
           )}
+          <Pagination paged={pagedLogs} noun="entries" className="mt-3" />
         </CardContent>
       </Card>
     </div>

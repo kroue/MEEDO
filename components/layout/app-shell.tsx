@@ -6,8 +6,13 @@ import { Loader2 } from "lucide-react";
 import { AuthProvider, useAuth } from "@/lib/auth/AuthContext";
 import { Sidebar } from "@/components/layout/sidebar";
 import { TopNavbar } from "@/components/layout/top-navbar";
+import { PrintHost } from "@/components/print/PrintHost";
 
 const PUBLIC_ROUTES = ["/login"];
+
+// Rendered on its own, outside the console: it is what a browser tab lands
+// on, and it has to work whether or not anyone is signed in.
+const STANDALONE_ROUTES = ["/install"];
 
 // Routes only the "admin" role can reach — everything else (concessionaire
 // lookup, connections, billing, collections) is available to "staff" too.
@@ -28,11 +33,12 @@ function AuthGate({ children }: { children: React.ReactNode }) {
   const { user, role, loading } = useAuth();
   const pathname = usePathname();
   const router = useRouter();
+  const isStandaloneRoute = STANDALONE_ROUTES.includes(pathname);
   const isPublicRoute = PUBLIC_ROUTES.includes(pathname);
   const staffOnAdminRoute = role === "staff" && isAdminOnlyRoute(pathname);
 
   useEffect(() => {
-    if (loading) return;
+    if (loading || isStandaloneRoute) return;
     if (!user && !isPublicRoute) {
       router.replace("/login");
     } else if (user && isPublicRoute) {
@@ -40,7 +46,10 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     } else if (user && staffOnAdminRoute) {
       router.replace(landingPageFor(role));
     }
-  }, [user, role, loading, isPublicRoute, staffOnAdminRoute, router]);
+  }, [user, role, loading, isPublicRoute, isStandaloneRoute, staffOnAdminRoute, router]);
+
+  // Before anything else: this page is the same signed in or out.
+  if (isStandaloneRoute) return <>{children}</>;
 
   // Still resolving the initial auth state — avoid flashing protected content.
   if (loading) {
@@ -73,6 +82,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
           {children}
         </main>
       </div>
+      <PrintHost />
     </div>
   );
 }

@@ -1,0 +1,21 @@
+# Cloudflare Tunnel — MEEDO Admin Console
+#
+# Copy to C:\Users\<you>\.cloudflared\config.yml and fill in the two
+# placeholders. `cloudflared tunnel create` prints the ID and writes the
+# credentials file it refers to.
+#
+# The tunnel dials out to Cloudflare, so nothing is opened on the office
+# firewall. Cloudflare terminates HTTPS and forwards to the console on
+# localhost, which is what lets staff PCs install it as an app.
+
+tunnel: REPLACE-WITH-TUNNEL-ID
+credentials-file: C:\Users\REPLACE-WITH-USER\.cloudflared\REPLACE-WITH-TUNNEL-ID.json
+
+ingress:
+  - hostname: REPLACE-WITH-HOSTNAME
+    service: http://localhost:3000
+    originRequest:
+      # Printing a long statement of account can take a moment to render.
+      connectTimeout: 30s
+  # Anything not matching the hostname above is refused rather than forwarded.
+  - service: http_status:404

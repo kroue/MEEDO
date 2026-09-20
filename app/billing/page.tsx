@@ -1,5 +1,6 @@
 "use client";
 
+import { userMessage } from "@/lib/userMessage";
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -24,6 +25,8 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Label } from "@/components/ui/label";
+import { Pagination, usePagination } from "@/components/ui/pagination";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -203,6 +206,8 @@ export default function BillingPage() {
     });
   }, [allBills, barangayFilter, monthFilter, search]);
 
+  const pagedBills = usePagination(filteredBills);
+
   // Water sold, not bill totals: each bill's `pesoAmount` already folds in the
   // prior unpaid balance, so summing it counts the same debt once per month it
   // stayed unpaid. Disconnection-eligible counts distinct ACCOUNTS — one
@@ -248,7 +253,7 @@ export default function BillingPage() {
         <Alert variant="destructive">
           <AlertCircle className="h-4 w-4" />
           <AlertTitle>Error</AlertTitle>
-          <AlertDescription>{(error ?? billsError)?.message}</AlertDescription>
+          <AlertDescription>{userMessage(error ?? billsError)}</AlertDescription>
         </Alert>
       )}
 
@@ -297,42 +302,61 @@ export default function BillingPage() {
       {/* Filters */}
       <Card>
         <CardContent className="pt-6">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-              <Input
-                placeholder="Search by name or meter number..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="pl-9 text-sm"
-              />
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+            <div className="flex-1 space-y-1.5">
+              <Label htmlFor="billing-search" className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                Search
+              </Label>
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <Input
+                  id="billing-search"
+                  placeholder="Name, account number or meter number..."
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className="pl-9 text-sm"
+                />
+              </div>
             </div>
-            <Select value={barangayFilter} onValueChange={(v) => v && setBarangayFilter(v)}>
-              <SelectTrigger className="w-full sm:w-44 text-sm">
-                <SelectValue placeholder="Barangay" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Barangays</SelectItem>
-                {BARANGAYS.map((b) => (
-                  <SelectItem key={b} value={b}>
-                    {b}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Select value={monthFilter} onValueChange={(v) => v && setMonthFilter(v)}>
-              <SelectTrigger className="w-full sm:w-40 text-sm">
-                <SelectValue placeholder="Month" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Months</SelectItem>
-                {availableMonths.map((m) => (
-                  <SelectItem key={m} value={m}>
-                    {m}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="billing-barangay" className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                Barangay
+              </Label>
+              <Select value={barangayFilter} onValueChange={(v) => v && setBarangayFilter(v)}>
+                <SelectTrigger id="billing-barangay" className="w-full sm:w-44 text-sm">
+                  {/* The trigger shows the stored value, so "all" needs saying properly. */}
+                  <SelectValue>{(value) => (value === "all" ? "All barangays" : String(value))}</SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Barangays</SelectItem>
+                  {BARANGAYS.map((b) => (
+                    <SelectItem key={b} value={b}>
+                      {b}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="billing-month" className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                Billing month
+              </Label>
+              <Select value={monthFilter} onValueChange={(v) => v && setMonthFilter(v)}>
+                <SelectTrigger id="billing-month" className="w-full sm:w-40 text-sm">
+                  <SelectValue>{(value) => (value === "all" ? "All months" : String(value))}</SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Months</SelectItem>
+                  {availableMonths.map((m) => (
+                    <SelectItem key={m} value={m}>
+                      {m}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -387,7 +411,7 @@ export default function BillingPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {filteredBills.map((b, i) => {
+                  {pagedBills.rows.map((b, i) => {
                     const status = paymentStatus(b.pesoAmount, b.amountPaid);
                     const overdueDays = status !== "PAID" ? b.accountOverdueDays : null;
                     const disconnectionEligible = isDisconnectionEligible(overdueDays);
@@ -445,6 +469,7 @@ export default function BillingPage() {
                   })}
                 </TableBody>
               </Table>
+              <Pagination paged={pagedBills} noun="bills" className="mt-3" />
             </div>
           )}
         </CardContent>

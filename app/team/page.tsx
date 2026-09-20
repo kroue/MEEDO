@@ -1,5 +1,6 @@
 "use client";
 
+import { userMessage } from "@/lib/userMessage";
 import { useEffect, useState, type FormEvent } from "react";
 import {
   subscribeToConsoleUsers,
@@ -51,6 +52,7 @@ import {
 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import { Pagination, usePagination } from "@/components/ui/pagination";
 
 const ROLE_BADGE_STYLES: Record<"admin" | "staff", string> = {
   admin: "bg-sky-50 text-sky-700 border-sky-200",
@@ -62,6 +64,7 @@ export default function TeamPage() {
   const actorEmail = user?.email ?? "unknown";
 
   const [users, setUsers] = useState<ConsoleUser[]>([]);
+  const pagedUsers = usePagination(users);
   const [loaded, setLoaded] = useState(false);
 
   const [createOpen, setCreateOpen] = useState(false);
@@ -138,7 +141,7 @@ export default function TeamPage() {
       resetCreateForm();
       setCreateOpen(false);
     } catch (err) {
-      setCreateError(err instanceof Error ? err.message : "Failed to create account.");
+      setCreateError(userMessage(err, "Failed to create account."));
     } finally {
       setCreating(false);
     }
@@ -150,7 +153,7 @@ export default function TeamPage() {
     try {
       await setAccountDisabled(u.uid, !u.disabled);
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : "Failed to update the account.");
+      setActionError(userMessage(err, "Failed to update the account."));
     } finally {
       setBusyUid(null);
     }
@@ -188,7 +191,7 @@ export default function TeamPage() {
       setResetPassword("");
       setResetConfirm("");
     } catch (err) {
-      setResetError(err instanceof Error ? err.message : "Failed to reset the password.");
+      setResetError(userMessage(err, "Failed to reset the password."));
     } finally {
       setResetting(false);
     }
@@ -225,7 +228,7 @@ export default function TeamPage() {
       );
       setEditingUser(null);
     } catch (err) {
-      setEditError(err instanceof Error ? err.message : "Failed to update account.");
+      setEditError(userMessage(err, "Failed to update account."));
     } finally {
       setEditSaving(false);
     }
@@ -511,7 +514,7 @@ export default function TeamPage() {
             <RefreshCw className="h-8 w-8 animate-spin text-muted-foreground" />
           </div>
         ) : (
-          users.map((u) => (
+          pagedUsers.rows.map((u) => (
             <Card key={u.uid}>
               <CardHeader className="pb-2">
                 <div className="flex items-start justify-between gap-2">
@@ -593,6 +596,8 @@ export default function TeamPage() {
           ))
         )}
       </div>
+
+      <Pagination paged={pagedUsers} noun="accounts" />
     </div>
   );
 }

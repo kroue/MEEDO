@@ -43,7 +43,10 @@ export function useConcessionaires(
   const { realtime = false } = options;
 
   const [concessionaires, setConcessionaires] = useState<Concessionaire[]>([]);
-  const [loading, setLoading] = useState<boolean>(false);
+  // Loading from the very first render whenever there is something to load.
+  // Starting at false meant one render reporting "done, nothing found" before
+  // the fetch had even begun.
+  const [loading, setLoading] = useState<boolean>(() => Boolean(barangay));
   const [error, setError] = useState<Error | null>(null);
 
   // Stable counter to trigger manual refreshes without changing deps
@@ -135,7 +138,11 @@ export function useConcessionaire(
   const { realtime = false } = options;
 
   const [concessionaire, setConcessionaire] = useState<Concessionaire | null>(null);
-  const [loading, setLoading] = useState<boolean>(false);
+  // Loading from the very first render whenever there is an id. Starting at
+  // false gave one render of "loaded, and no such account" before the fetch
+  // began — which printable documents took as final and refused to print, and
+  // detail pages flashed as "not found".
+  const [loading, setLoading] = useState<boolean>(() => Boolean(id));
   const [error, setError] = useState<Error | null>(null);
 
   const [refreshTick, setRefreshTick] = useState(0);

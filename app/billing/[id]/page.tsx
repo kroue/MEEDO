@@ -1,11 +1,14 @@
 "use client";
 
+import { printDocument } from "@/components/print/PrintHost";
+import { PaymentReceipt, WaterBillStatement } from "@/components/print/documents";
+import { userMessage } from "@/lib/userMessage";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useConcessionaire } from "@/lib/firebase/useConcessionaires";
 import { subscribeToBills, subscribeToPayments } from "@/lib/firebase/bills";
-import { issueBill, voidBill, previewBill, BillingError } from "@/lib/firebase/issueBill";
+import { issueBill, voidBill, previewBill } from "@/lib/firebase/issueBill";
 import { useAuth } from "@/lib/auth/AuthContext";
 import type { BillingResult } from "@/lib/billingCalculator";
 import type { MonthlyBillingRecord, PaymentRecord } from "@/lib/firebase/types";
@@ -19,6 +22,7 @@ import {
   concessionaireDaysOverdue,
   isDisconnectionEligible,
   currentMonthStr,
+  billableMonths,
 } from "@/lib/billing";
 import {
   Card,
@@ -32,6 +36,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   Dialog,
@@ -95,6 +106,14 @@ export default function ConcessionaireBillingPage() {
   // ── Office-side billing ──────────────────────────────────────────────────
   const [issueOpen, setIssueOpen] = useState(false);
   const [issueMonth, setIssueMonth] = useState(currentMonthStr());
+  // Offered as a list: the month is parsed into the bill's key, so a typed
+  // variant would file the bill under a month nothing else recognises.
+  const thisMonth = useMemo(() => currentMonthStr(), []);
+  const monthOptions = useMemo(() => {
+    const billed = new Set(billRecords.filter((b) => !b.voided).map((b) => b.month));
+    return billableMonths().map((value) => ({ value, billed: billed.has(value) }));
+  }, [billRecords]);
+  const alreadyBilled = monthOptions.some((m) => m.value === issueMonth && m.billed);
   const [issueReading, setIssueReading] = useState("");
   const [issueEstimated, setIssueEstimated] = useState(false);
   const [issueNote, setIssueNote] = useState("");
@@ -127,7 +146,7 @@ export default function ConcessionaireBillingPage() {
       setIssueError(null);
     } catch (e) {
       setIssuePreview(null);
-      setIssueError(e instanceof Error ? e.message : "Couldn't calculate that bill.");
+      setIssueError(userMessage(e, "Couldn't calculate that bill."));
     }
   }, [concessionaire, issueMonth, issueReading]);
 
@@ -156,7 +175,7 @@ export default function ConcessionaireBillingPage() {
       setIssuePreview(null);
     } catch (e) {
       setIssueError(
-        e instanceof BillingError || e instanceof Error ? e.message : "Failed to issue the bill."
+        userMessage(e, "Failed to issue the bill.")
       );
     } finally {
       setIssuing(false);
@@ -172,7 +191,7 @@ export default function ConcessionaireBillingPage() {
       setVoidTarget(null);
       setVoidReason("");
     } catch (e) {
-      setVoidError(e instanceof Error ? e.message : "Failed to void the bill.");
+      setVoidError(userMessage(e, "Failed to void the bill."));
     } finally {
       setVoiding(false);
     }
@@ -220,27 +239,6 @@ export default function ConcessionaireBillingPage() {
     [paymentRecords]
   );
 
-  // Prints a receipt route in a hidden iframe — the target page calls
-  // window.print() itself once it loads. Same pattern used on the
-  // Collections and Connections pages for their own receipts.
-  const handlePrintWithoutNewTab = (url: string) => {
-    const iframe = document.createElement("iframe");
-    iframe.style.position = "fixed";
-    iframe.style.right = "0";
-    iframe.style.bottom = "0";
-    iframe.style.width = "0px";
-    iframe.style.height = "0px";
-    iframe.style.border = "none";
-    iframe.src = url;
-    document.body.appendChild(iframe);
-
-    setTimeout(() => {
-      if (document.body.contains(iframe)) {
-        document.body.removeChild(iframe);
-      }
-    }, 60_000);
-  };
-
   if (loading && !concessionaire) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[50vh]">
@@ -256,7 +254,7 @@ export default function ConcessionaireBillingPage() {
         <div className="rounded-xl border border-red-200 bg-red-50 p-6 flex flex-col items-center">
           <AlertCircle className="h-10 w-10 text-red-500 mb-3" />
           <h2 className="text-lg font-bold text-red-700">Error Loading Billing History</h2>
-          <p className="text-sm text-red-600 mt-1 mb-4">{error.message}</p>
+          <p className="text-sm text-red-600 mt-1 mb-4">{userMessage(error)}</p>
           <Button variant="outline" onClick={() => router.push("/billing")}>
             <ArrowLeft className="h-4 w-4 mr-2" />
             Back to Billing
@@ -319,7 +317,7 @@ export default function ConcessionaireBillingPage() {
           <Button
             variant="outline"
             className="bg-white border-slate-200 text-slate-700 hover:bg-slate-50 font-semibold shadow-sm"
-            onClick={() => handlePrintWithoutNewTab(`/billing/${concessionaire.id}/print-soa`)}
+            onClick={() => printDocument(<WaterBillStatement concessionaireId={concessionaire.id} />)}
           >
             <FileText className="h-4 w-4 mr-2 text-sky-500" />
             Print SOA
@@ -605,9 +603,7 @@ export default function ConcessionaireBillingPage() {
                           size="sm"
                           className="h-8 text-sky-600 hover:text-sky-700 hover:bg-sky-50"
                           onClick={() =>
-                            handlePrintWithoutNewTab(
-                              `/collections/${concessionaire.id}/print-receipt?or=${encodeURIComponent(p.orNumber)}`
-                            )
+                            printDocument(<PaymentReceipt concessionaireId={concessionaire.id} orNumber={p.orNumber} />)
                           }
                         >
                           <Printer className="h-4 w-4 mr-1.5" />
@@ -646,13 +642,28 @@ export default function ConcessionaireBillingPage() {
 
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
-              <Label className="text-xs font-medium text-slate-700">Billing month</Label>
-              <Input
-                value={issueMonth}
-                onChange={(e) => setIssueMonth(e.target.value.toUpperCase())}
-                placeholder="SEP 2026"
-                className="text-sm font-mono"
-              />
+              <Label htmlFor="issue-month" className="text-xs font-medium text-slate-700">
+                Billing month
+              </Label>
+              <Select value={issueMonth} onValueChange={(v) => v && setIssueMonth(String(v))}>
+                <SelectTrigger id="issue-month" className="w-full text-sm font-mono">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {monthOptions.map((month) => (
+                    <SelectItem key={month.value} value={month.value} className="font-mono text-sm">
+                      {month.value}
+                      {month.billed ? " · already billed" : ""}
+                      {month.value === thisMonth ? " · this month" : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {alreadyBilled && (
+                <p className="text-[11px] text-amber-700">
+                  This month already has a bill. Issuing again replaces it and keeps its OR number.
+                </p>
+              )}
             </div>
             <div className="space-y-1.5">
               <Label className="text-xs font-medium text-slate-700">Current reading (m³)</Label>

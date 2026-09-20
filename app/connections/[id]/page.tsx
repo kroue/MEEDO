@@ -1,5 +1,8 @@
 "use client";
 
+import { printDocument } from "@/components/print/PrintHost";
+import { ConnectionFeeReceipt, ConnectionFeeStatement } from "@/components/print/documents";
+import { userMessage } from "@/lib/userMessage";
 import React, { useState, useEffect } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
@@ -12,8 +15,15 @@ import {
   updateConnectionFeeDetails,
   addMeterPayment,
   voidMeterPayment,
-  InvalidMeterPaymentError,
 } from "@/lib/firebase/concessionaires";
+import {
+  isOpenRequest,
+  subscribeToAccountRequests,
+  submitConnectionPaymentRequest,
+  submitConnectionSetupRequest,
+} from "@/lib/firebase/requests";
+import { orNumberProblem } from "@/lib/receipts";
+import type { ServiceRequest } from "@/lib/firebase/types";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -50,7 +60,9 @@ export default function ConnectionDetailsPage() {
   const { id } = useParams<{ id: string }>();
   const { user, role } = useAuth();
   const actorEmail = user?.email ?? "unknown";
-  const canInitialize = role === "admin";
+  // Staff fill in the same forms; what differs is where it goes. An admin
+  // applies it to the account, a staff member sends it for approval.
+  const canPostDirectly = role === "admin";
   const router = useRouter();
   
   const { concessionaire, loading, error } = useConcessionaire(id, { realtime: true });
@@ -67,6 +79,18 @@ export default function ConnectionDetailsPage() {
   const [isPaying, setIsPaying] = useState(false);
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [initError, setInitError] = useState<string | null>(null);
+  const [requestNotice, setRequestNotice] = useState<string | null>(null);
+  const [accountRequests, setAccountRequests] = useState<ServiceRequest[]>([]);
+
+  // Anything on this account already waiting on an admin.
+  useEffect(() => {
+    if (!id) return;
+    return subscribeToAccountRequests(
+      id,
+      (rows) => setAccountRequests(rows.filter(isOpenRequest)),
+      (e) => console.warn("Couldn't load pending requests for this account", e)
+    );
+  }, [id]);
 
   // Void flow
   const [voidTarget, setVoidTarget] = useState<string | null>(null);
@@ -126,7 +150,7 @@ export default function ConnectionDetailsPage() {
         <div className="rounded-xl border border-red-200 bg-red-50 p-6 flex flex-col items-center">
           <AlertCircle className="h-10 w-10 text-red-500 mb-3" />
           <h2 className="text-lg font-bold text-red-700">Error Loading Details</h2>
-          <p className="text-sm text-red-600 mt-1 mb-4">{error?.message || "Concessionaire not found."}</p>
+          <p className="text-sm text-red-600 mt-1 mb-4">{error ? userMessage(error) : "Concessionaire not found."}</p>
           <Button variant="outline" onClick={() => router.push("/connections")}>
             <ArrowLeft className="h-4 w-4 mr-2" />
             Back to Connections
@@ -148,24 +172,34 @@ export default function ConnectionDetailsPage() {
       const otherPayablesTotal = otherPayables.reduce((sum, p) => sum + p.amount, 0);
       const total = fixedFees.waterMeter + fixedFees.applicationFee + fixedFees.inspectionFee + otherPayablesTotal;
       
-      const newTotalBalance = concessionaire.totalBalance + total;
-
       const newRemark = initialRemark.trim() ? {
         text: initialRemark.trim(),
         date: new Date().toISOString(),
       } : undefined;
 
-      await updateConnectionFeeDetails(
-        concessionaire.id,
-        { ...fixedFees, otherPayables, total },
-        total, // set initial waterMeterBalance to the total connection fee
-        newTotalBalance,
-        actorEmail,
-        newRemark
-      );
+      if (canPostDirectly) {
+        await updateConnectionFeeDetails(
+          concessionaire.id,
+          { ...fixedFees, otherPayables, total },
+          actorEmail,
+          newRemark
+        );
+      } else {
+        await submitConnectionSetupRequest(
+          concessionaire,
+          {
+            connectionFeeDetails: { ...fixedFees, otherPayables, total },
+            note: initialRemark,
+          },
+          actorEmail
+        );
+        setRequestNotice(
+          "Sent to an admin for approval. The connection is set up once it is approved."
+        );
+      }
     } catch (err) {
       console.error(err);
-      setInitError(err instanceof Error ? err.message : "Failed to initialize connection.");
+      setInitError(userMessage(err, "Failed to initialize connection."));
     } finally {
       setIsInitializing(false);
     }
@@ -173,33 +207,52 @@ export default function ConnectionDetailsPage() {
 
   async function handlePayment() {
     if (!concessionaire || !paymentAmount || !paymentSlot || !paymentOr.trim()) return;
+    const orProblem = orNumberProblem(paymentOr);
+    if (orProblem) {
+      setPaymentError(orProblem);
+      return;
+    }
     setIsPaying(true);
     setPaymentError(null);
+    setRequestNotice(null);
     try {
       // The balance is now recomputed server-side inside a transaction —
       // passing a client-computed figure meant two cashiers recording
       // installments seconds apart produced two payment rows but only one
       // balance reduction.
-      await addMeterPayment(
-        concessionaire.id,
-        {
-          slot: paymentSlot,
-          amount: Number(paymentAmount),
-          orNumber: paymentOr.trim(),
-          date: new Date().toISOString(),
-        },
-        actorEmail
-      );
+      if (canPostDirectly) {
+        await addMeterPayment(
+          concessionaire.id,
+          {
+            slot: paymentSlot,
+            amount: Number(paymentAmount),
+            orNumber: paymentOr.trim(),
+            date: new Date().toISOString(),
+          },
+          actorEmail
+        );
+      } else {
+        await submitConnectionPaymentRequest(
+          concessionaire,
+          {
+            amount: Number(paymentAmount),
+            orNumber: paymentOr,
+            slot: paymentSlot,
+          },
+          actorEmail
+        );
+        setRequestNotice(
+          `Sent to an admin for approval. The connection fee balance changes once it is approved — keep OR ${paymentOr
+            .trim()
+            .toUpperCase()} with the receipt.`
+        );
+      }
 
       setPaymentAmount("");
       setPaymentOr("");
     } catch (err) {
       console.error(err);
-      setPaymentError(
-        err instanceof InvalidMeterPaymentError || err instanceof Error
-          ? err.message
-          : "Failed to process payment."
-      );
+      setPaymentError(userMessage(err, "Failed to process payment."));
     } finally {
       setIsPaying(false);
     }
@@ -214,31 +267,11 @@ export default function ConnectionDetailsPage() {
       setVoidTarget(null);
       setVoidReason("");
     } catch (err) {
-      setVoidError(err instanceof Error ? err.message : "Failed to void the payment.");
+      setVoidError(userMessage(err, "Failed to void the payment."));
     } finally {
       setIsVoiding(false);
     }
   }
-
-  const handlePrintWithoutNewTab = (url: string) => {
-    const iframe = document.createElement('iframe');
-    iframe.style.position = 'fixed';
-    iframe.style.right = '0';
-    iframe.style.bottom = '0';
-    iframe.style.width = '0px';
-    iframe.style.height = '0px';
-    iframe.style.border = 'none';
-    iframe.src = url;
-    document.body.appendChild(iframe);
-    
-    // The target page will call window.print() on its own.
-    // Clean up the iframe after a minute to be safe
-    setTimeout(() => {
-      if (document.body.contains(iframe)) {
-        document.body.removeChild(iframe);
-      }
-    }, 60000);
-  };
 
   return (
     <div className="p-4 md:p-8 space-y-6 max-w-4xl mx-auto">
@@ -271,7 +304,7 @@ export default function ConnectionDetailsPage() {
             <Button 
               variant="outline"
               className="bg-white border-slate-200 text-slate-700 hover:bg-slate-50 font-semibold shadow-sm"
-              onClick={() => handlePrintWithoutNewTab(`/connections/${concessionaire.id}/print-soa`)}
+              onClick={() => printDocument(<ConnectionFeeStatement concessionaireId={concessionaire.id} />)}
             >
               <Printer className="h-4 w-4 mr-2 text-slate-400" />
               Print SOA
@@ -280,20 +313,26 @@ export default function ConnectionDetailsPage() {
         )}
       </div>
 
-      {!connectionFeeDetails && !canInitialize ? (
-        // Staff can accept payments and print SOAs, but setting up a brand
-        // new connection's fee schedule is an admin-only decision.
-        <Card className="border-slate-200 shadow-sm bg-white overflow-hidden max-w-2xl">
-          <CardContent className="flex flex-col items-center justify-center py-16 text-center">
-            <Plug className="h-10 w-10 text-slate-300 mb-3" />
-            <p className="text-sm font-medium text-slate-600">Connection not yet set up</p>
-            <p className="text-xs text-slate-400 mt-1 max-w-xs">
-              Ask an admin to initialize this concessionaire&apos;s connection fee before payments can be
-              recorded here.
-            </p>
-          </CardContent>
-        </Card>
-      ) : !connectionFeeDetails ? (
+      {requestNotice && (
+        <div className="flex items-start gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 max-w-2xl">
+          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+          <p className="text-sm text-emerald-900">{requestNotice}</p>
+        </div>
+      )}
+
+      {accountRequests.length > 0 && (
+        <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 max-w-2xl">
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+          <p className="text-sm text-amber-900">
+            {accountRequests.length === 1
+              ? "1 request on this account is waiting for an admin"
+              : `${accountRequests.length} requests on this account are waiting for an admin`}
+            . The balances below do not include it yet.
+          </p>
+        </div>
+      )}
+
+      {!connectionFeeDetails ? (
         // Init State
         <Card className="border-sky-100 shadow-sm bg-white overflow-hidden max-w-2xl">
           <div className="h-1 bg-sky-500 w-full" />
@@ -303,7 +342,9 @@ export default function ConnectionDetailsPage() {
               Initialize New Connection
             </CardTitle>
             <CardDescription className="text-sky-700/70">
-              Generate the connection fee balance for this concessionaire.
+              {canPostDirectly
+                ? "Generate the connection fee balance for this concessionaire."
+                : "Fill this in and send it to an admin. The balance is created once they approve."}
             </CardDescription>
           </CardHeader>
           <CardContent className="pt-6 space-y-6">
@@ -417,7 +458,7 @@ export default function ConnectionDetailsPage() {
               disabled={isInitializing}
             >
               {isInitializing ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <CheckCircle2 className="h-4 w-4 mr-2" />}
-              Generate Connection Balance
+              {canPostDirectly ? "Generate Connection Balance" : "Send for Approval"}
             </Button>
           </CardFooter>
         </Card>
@@ -471,12 +512,12 @@ export default function ConnectionDetailsPage() {
                             variant="ghost" 
                             size="sm" 
                             className="h-8 text-sky-600 hover:text-sky-700 hover:bg-sky-50"
-                            onClick={() => handlePrintWithoutNewTab(`/connections/${concessionaire.id}/print-receipt?index=${i}`)}
+                            onClick={() => printDocument(<ConnectionFeeReceipt concessionaireId={concessionaire.id} paymentIndex={i} />)}
                           >
                             <Printer className="h-4 w-4 mr-1.5" />
                             <span className="text-xs font-semibold">Print</span>
                           </Button>
-                          {!p.voided && canInitialize && (
+                          {!p.voided && canPostDirectly && (
                             <Button
                               variant="ghost"
                               size="sm"
@@ -574,8 +615,15 @@ export default function ConnectionDetailsPage() {
                       className="bg-white border-slate-200 h-9 text-sm font-mono"
                       value={paymentOr}
                       onChange={(e) => setPaymentOr(e.target.value)}
-                      placeholder="e.g. OR-12345"
+                      placeholder="As written on the receipt"
+                      autoComplete="off"
                     />
+                    <p className="text-[11px] text-slate-500">
+                      Copy the number from the receipt booklet — it is not generated here.
+                    </p>
+                    {paymentOr.trim() && orNumberProblem(paymentOr) && (
+                      <p className="text-[11px] text-red-600">{orNumberProblem(paymentOr)}</p>
+                    )}
                   </div>
                   
                   {paymentError && (
@@ -587,11 +635,16 @@ export default function ConnectionDetailsPage() {
 
                   <Button 
                     className="w-full mt-2 bg-sky-600 hover:bg-sky-700 text-white font-semibold text-sm"
-                    disabled={isPaying || !paymentAmount || !paymentOr.trim()}
+                    disabled={
+                      isPaying ||
+                      !paymentAmount ||
+                      !paymentOr.trim() ||
+                      orNumberProblem(paymentOr) !== null
+                    }
                     onClick={handlePayment}
                   >
                     {isPaying ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Banknote className="h-4 w-4 mr-2" />}
-                    Save Payment
+                    {canPostDirectly ? "Save Payment" : "Send Payment for Approval"}
                   </Button>
                 </CardContent>
               </Card>

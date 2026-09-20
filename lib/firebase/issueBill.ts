@@ -39,6 +39,7 @@ import {
 } from "./bills";
 import { logAuditEvent } from "./auditLog";
 import { getFullName } from "../utils";
+import { isAccountApproved } from "../billing";
 import type { BillingSummary, Concessionaire, MonthlyBillingRecord } from "./types";
 
 const CONCESSIONAIRES = "concessionaires";
@@ -106,6 +107,9 @@ export async function previewBill(
   currentReading: number,
   now: number = Date.now()
 ): Promise<{ billing: BillingResult; previousReading: number; replacing: MonthlyBillingRecord | null }> {
+  if (!isAccountApproved(c)) {
+    throw new BillingError("This account is waiting for admin approval and can't be billed yet.");
+  }
   const window = await fetchSummaryWindow(c.id, c.billingHistory);
   const existing = window.find((b) => b.month === monthStr) ?? null;
   const prior = window.find((b) => b.month !== monthStr) ?? null;
@@ -159,6 +163,9 @@ export async function issueBill(input: IssueBillInput): Promise<IssueBillResult>
   // the next write corrects.
   const raw = await import("./bills").then((m) => m.fetchConcessionaireRaw(concessionaireId));
   if (!raw) throw new BillingError("Concessionaire not found.");
+  if (!isAccountApproved(raw)) {
+    throw new BillingError("This account is waiting for admin approval and can't be billed yet.");
+  }
   const summaryWindow = await fetchSummaryWindow(concessionaireId, raw.billingHistory);
 
   const result = await runTransaction(db, async (transaction) => {

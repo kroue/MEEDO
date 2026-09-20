@@ -1,10 +1,12 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useConcessionaires } from "@/lib/firebase/useConcessionaires";
+import { fetchRecentBills, fetchRecentPayments } from "@/lib/firebase/bills";
+import type { BillDocument, PaymentDocument } from "@/lib/firebase/types";
 import { getCubicUsed } from "@/lib/firebase/types";
-import { monthSortKey } from "@/lib/billing";
-import { getFullName, formatPeso } from "@/lib/utils";
+import { isAccountApproved, monthSortKey, waterChargeOf } from "@/lib/billing";
+import { formatCompact, formatCompactPeso, getFullName, formatPeso } from "@/lib/utils";
 import {
   Card,
   CardContent,
@@ -61,20 +63,51 @@ const accentStyles = {
 } as const;
 
 export default function DashboardPage() {
-  const { concessionaires, loading } = useConcessionaires("all", { realtime: true });
+  const { concessionaires: allConcessionaires, loading } = useConcessionaires("all", { realtime: true });
+
+  // Accounts awaiting (or refused) admin approval aren't customers yet.
+  const concessionaires = useMemo(
+    () => allConcessionaires.filter(isAccountApproved),
+    [allConcessionaires]
+  );
+
+  // Bills and payments live in sub-collections now, so the chart and the feed
+  // read them directly instead of from arrays that new accounts no longer have.
+  const [recentBills, setRecentBills] = useState<BillDocument[]>([]);
+  const [recentPaymentDocs, setRecentPaymentDocs] = useState<PaymentDocument[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchRecentBills(1000)
+      .then((rows) => !cancelled && setRecentBills(rows))
+      .catch((e) => console.warn("Couldn't load bills for the dashboard", e));
+    fetchRecentPayments(8)
+      .then((rows) => !cancelled && setRecentPaymentDocs(rows))
+      .catch((e) => console.warn("Couldn't load payments for the dashboard", e));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const stats = useMemo(() => {
     const totalAccounts = concessionaires.length;
     const activeAccounts = concessionaires.filter((c) => c.status === "CONNECTED").length;
-    const delinquent = concessionaires.filter((c) => c.totalBalance > 0);
-    const totalOutstanding = delinquent.reduce((sum, c) => sum + c.totalBalance, 0);
+    const delinquent = concessionaires.filter((c) => (c.totalBalance ?? 0) > 0);
+    const totalOutstanding = delinquent.reduce((sum, c) => sum + (c.totalBalance ?? 0), 0);
     const delinquencyRate = totalAccounts > 0 ? (delinquent.length / totalAccounts) * 100 : 0;
 
+    // Cash actually received. Summing each bill's amountPaid counted the same
+    // money once per month it was carried forward — the same double-count
+    // Reports had — so this uses the maintained summary, then real receipts.
     let totalCollections = 0;
     concessionaires.forEach((c) => {
-      (c.billingHistory || []).forEach((h) => {
-        totalCollections += h.amountPaid;
-      });
+      if (c.billingSummary) {
+        totalCollections += c.billingSummary.totalCollected;
+      } else {
+        (c.payments || []).forEach((p) => {
+          if (!p.voided) totalCollections += p.amount;
+        });
+      }
     });
 
     return { totalAccounts, activeAccounts, delinquentCount: delinquent.length, totalOutstanding, delinquencyRate, totalCollections };
@@ -113,28 +146,53 @@ export default function DashboardPage() {
 
   const monthlyChartData = useMemo(() => {
     const byMonth = new Map<string, { month: string; consumption: number; revenue: number }>();
+    const approvedIds = new Set(concessionaires.map((c) => c.id));
+
+    const add = (h: { month: string; reading: number; previousReading: number; voided?: boolean } & Parameters<typeof waterChargeOf>[0]) => {
+      if (h.voided) return;
+      const entry = byMonth.get(h.month) || { month: h.month, consumption: 0, revenue: 0 };
+      entry.consumption += getCubicUsed(h);
+      // Water sold, not the bill total: each bill already carries the last
+      // one forward, so summing pesoAmount inflated every delinquent month.
+      entry.revenue += waterChargeOf(h);
+      byMonth.set(h.month, entry);
+    };
+
+    const seen = new Set<string>();
+    recentBills.forEach((b) => {
+      if (!approvedIds.has(b.concessionaireId)) return;
+      seen.add(`${b.concessionaireId}|${b.month}`);
+      add(b);
+    });
+    // Accounts the storage migration hasn't reached still hold history inline.
     concessionaires.forEach((c) => {
       (c.billingHistory || []).forEach((h) => {
-        const entry = byMonth.get(h.month) || { month: h.month, consumption: 0, revenue: 0 };
-        entry.consumption += getCubicUsed(h);
-        entry.revenue += h.pesoAmount;
-        byMonth.set(h.month, entry);
+        if (!seen.has(`${c.id}|${h.month}`)) add(h);
       });
     });
+
     return Array.from(byMonth.values())
       .sort((a, b) => monthSortKey(a.month) - monthSortKey(b.month))
       .slice(-12);
-  }, [concessionaires]);
+  }, [concessionaires, recentBills]);
 
   const recentPayments = useMemo(() => {
     const rows: { orNumber: string; concessionaireName: string; amount: number; date: string; recordedBy: string }[] = [];
+    const seen = new Set<string>();
+    recentPaymentDocs.forEach((p) => {
+      if (p.voided) return;
+      seen.add(p.orNumber);
+      rows.push({ ...p });
+    });
+    // Accounts not yet migrated still hold payments inline.
     concessionaires.forEach((c) => {
       (c.payments || []).forEach((p) => {
+        if (p.voided || seen.has(p.orNumber)) return;
         rows.push({ ...p, concessionaireName: getFullName(c) });
       });
     });
     return rows.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).slice(0, 8);
-  }, [concessionaires]);
+  }, [concessionaires, recentPaymentDocs]);
 
   return (
     <div className="space-y-6 max-w-[1400px] mx-auto">
@@ -228,7 +286,7 @@ export default function DashboardPage() {
                         tick={{ fill: "#475569", fontSize: 11, fontWeight: 500 }}
                         tickLine={false}
                         axisLine={false}
-                        tickFormatter={(v) => `${(Number(v) / 1000).toFixed(0)}k`}
+                        tickFormatter={(v) => formatCompact(Number(v))}
                         dx={-10}
                       />
                       <YAxis
@@ -237,7 +295,7 @@ export default function DashboardPage() {
                         tick={{ fill: "#475569", fontSize: 11, fontWeight: 500 }}
                         tickLine={false}
                         axisLine={false}
-                        tickFormatter={(v) => `₱${(Number(v) / 1000).toFixed(0)}k`}
+                        tickFormatter={(v) => formatCompactPeso(Number(v))}
                         dx={10}
                       />
                       <Tooltip

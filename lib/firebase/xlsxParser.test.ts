@@ -208,3 +208,46 @@ suite("parseXlsxFile against the test workbook", () => {
     expect(undefinedValues).toEqual([]);
   });
 });
+
+/**
+ * Built in memory rather than from the fixture, so these hold even before
+ * anyone has run tools/make-test-workbook.mjs.
+ */
+describe("account numbers and the meter column", () => {
+  async function parseSheet(rows: unknown[][]) {
+    const XLSX = await import("xlsx");
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), "Concessionaires");
+    const bytes = XLSX.write(wb, { type: "array", bookType: "xlsx" }) as ArrayBuffer;
+    const file = new File([bytes], "sheet.xlsx", {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    const parsed = await parseXlsxFile(file);
+    return parsed.sheets.flatMap((s) => s.concessionaires);
+  }
+
+  it("never reads an account number from a workbook — the import assigns one", async () => {
+    const [account] = await parseSheet([
+      ["Meter No", "Barangay", "Purok", "First Name", "Last Name", "Account Number"],
+      ["MTR-9001", "BO-OT", "1", "Juan", "Dela Cruz", "2026-000999"],
+    ]);
+    expect(account.meterNumber).toBe("MTR-9001");
+    expect(account.accountNumber).toBeUndefined();
+  });
+
+  it("still accepts an older sheet that labels the meter column Account No", async () => {
+    const [account] = await parseSheet([
+      ["Account No", "Barangay", "Purok", "First Name", "Last Name"],
+      ["MTR-9002", "BO-OT", "2", "Maria", "Reyes"],
+    ]);
+    expect(account.meterNumber).toBe("MTR-9002");
+  });
+
+  it("takes the meter column when a sheet carries both headers", async () => {
+    const [account] = await parseSheet([
+      ["Account No", "Meter No", "Barangay", "Purok", "First Name", "Last Name"],
+      ["2026-000123", "MTR-9003", "BO-OT", "3", "Pedro", "Santos"],
+    ]);
+    expect(account.meterNumber).toBe("MTR-9003");
+  });
+});

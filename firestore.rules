@@ -66,6 +66,10 @@ service cloud.firestore {
       return roleExists() && callerRole() == "field_reader";
     }
 
+    function isStaff() {
+      return roleExists() && callerRole() == "staff";
+    }
+
     /** Fields a caller is attempting to add or change on an existing document. */
     function changed() {
       return request.resource.data.diff(resource.data).affectedKeys();
@@ -87,11 +91,57 @@ service cloud.firestore {
     match /concessionaires/{concessionaireId} {
       allow read: if roleExists();
 
-      allow create, delete: if isConsoleUser();
+      // New accounts. An admin's are live immediately. A staff member may
+      // create one only as a PENDING request, stamped with their own identity
+      // and not yet on anyone's reading route — it stays out of reading,
+      // billing and payments until an admin approves it. Enforced here rather
+      // than only in the console, which a staff account could otherwise bypass
+      // by writing `approvalStatus: "APPROVED"` straight from the SDK.
+      allow create: if isAdmin()
+        || (isStaff()
+            && request.resource.data.get('approvalStatus', '') == 'PENDING'
+            && request.resource.data.get('approvalRequestedBy', '') == request.auth.token.email
+            && !request.resource.data.keys().hasAny([
+                 'approvalReviewedBy',
+                 'approvalReviewedAt',
+                 'approvalRejectionReason',
+                 'assignedForReading'
+               ]));
 
-      // `billingHistory` is still listed because accounts the storage
-      // migration hasn't reached yet keep theirs; nothing writes it any more.
-      allow update: if isConsoleUser()
+      // Deleting an account takes its billing history with it, so it sits with
+      // the same person who approves money — not with the counter.
+      allow delete: if isAdmin();
+
+      // Only an admin decides an approval, puts an account on a reading route,
+      // or moves money. Staff keep editing the details — names, purok,
+      // classification, requirements, remarks — but a payment, a connection
+      // fee, a balance or a service status changes only when an admin applies
+      // the matching request in /serviceRequests. Enforced here and not just
+      // in the console, which a staff account could otherwise bypass by
+      // writing the balance straight from the SDK.
+      //
+      // `billingHistory` is still listed for readers because accounts the
+      // storage migration hasn't reached yet keep theirs; nothing writes it.
+      allow update: if isAdmin()
+        || (isStaff() && !changed().hasAny([
+              'approvalStatus',
+              'approvalReviewedBy',
+              'approvalReviewedAt',
+              'approvalRejectionReason',
+              'assignedForReading',
+              'status',
+              'disconnectedReason',
+              'billingBalance',
+              'creditBalance',
+              'totalBalance',
+              'waterMeterBalance',
+              'billingSummary',
+              'billingHistory',
+              'payments',
+              'meterPayments',
+              'connectionFeeDetails',
+              'delinquentSince'
+            ]))
         || (isFieldReader() && changed().hasOnly([
               'billingHistory',
               'billingSummary',
@@ -110,17 +160,21 @@ service cloud.firestore {
       // number stays accounted for.
       match /bills/{monthKey} {
         allow read: if roleExists();
-        allow create, update: if isConsoleUser() || isFieldReader();
-        allow delete: if isConsoleUser();
+        allow create, update: if isAdmin() || isFieldReader();
+        allow delete: if isAdmin();
       }
 
       // ── payments ───────────────────────────────────────────────────────
-      // Receipts against the water bill. Cash handling is the office's job,
-      // so readers may see them but never write one. Nothing may delete a
-      // receipt that was issued — voiding marks it in place.
+      // Receipts against the water bill, keyed by the OR number written on the
+      // paper receipt. A receipt appears here only when an admin posts the
+      // payment — a staff member at the counter submits a request instead, so
+      // the money on the account and the money in the drawer are reconciled by
+      // someone other than whoever took it. Readers may see them but never
+      // write one, and nothing may delete a receipt that was issued: voiding
+      // marks it in place.
       match /payments/{orNumber} {
         allow read: if roleExists();
-        allow create, update: if isConsoleUser();
+        allow create, update: if isAdmin();
         allow delete: if false;
       }
     }
@@ -136,29 +190,79 @@ service cloud.firestore {
       allow read: if isConsoleUser();
     }
 
+    // ── serviceRequests ──────────────────────────────────────────────────────
+    // What staff have asked an admin to apply: a payment taken at the counter,
+    // a connection being set up, or a line to be reconnected. Nothing in here
+    // has touched an account — it is the admin approving it that does.
+    //
+    // Staff may only file one, under their own name and PENDING. Every
+    // decision field is an admin's, so a staff account cannot approve its own
+    // request, backdate a review, or reopen one that was rejected.
+
+    match /serviceRequests/{requestId} {
+      // An admin works the whole queue; a staff member sees only what they
+      // sent. Their own subscription filters by requestedBy, which is what
+      // lets a list query satisfy this per-document rule.
+      allow read: if isAdmin() || resource.data.requestedBy == request.auth.token.email;
+
+      allow create: if isConsoleUser()
+        && request.resource.data.status == 'PENDING'
+        && request.resource.data.requestedBy == request.auth.token.email
+        && !request.resource.data.keys().hasAny([
+             'reviewedBy',
+             'reviewedAt',
+             'rejectionReason',
+             'completedBy',
+             'completedAt',
+             'outcome'
+           ]);
+
+      allow update: if isAdmin();
+      allow delete: if false;
+    }
+
     // ── settings ─────────────────────────────────────────────────────────────
-    // orCounter / paymentOrCounter — the shared atomic counters both apps
-    // increment when minting OR numbers. Receipt-number continuity is a cash
-    // control, so the counter may only ever move forward, and only these two
-    // documents exist. `year` rolling forward resets `lastNumber` to 1, which
-    // is the intended per-year sequence.
+    // The shared atomic counters. `orCounter` numbers bills; `accountNumberCounter`
+    // numbers accounts as they are opened. (`paymentOrCounter` is left here for
+    // older clients — receipts now carry the OR typed off the paper receipt, so
+    // nothing mints payment numbers any more.)
+    //
+    // Numbering continuity is a control in both cases, so a counter may only
+    // ever move forward, and only these documents exist. `year` rolling forward
+    // restarts the sequence, which is the intended per-year numbering.
+    //
+    // An account import reserves a block at once, so that counter may jump by
+    // more than one; a bill mints a single number at a time.
+
+    function isCounter(settingId) {
+      return settingId in ["orCounter", "paymentOrCounter", "accountNumberCounter"];
+    }
+
+    /**
+     * Who may move which counter. A field reader bills from the phone, so it
+     * has to be able to mint a bill number; nothing in the field opens an
+     * account, so the account counter stays with the office.
+     */
+    function mayMoveCounter(settingId) {
+      return settingId == "accountNumberCounter" ? isConsoleUser() : roleExists();
+    }
 
     match /settings/{settingId} {
       allow read: if roleExists();
 
-      allow create: if roleExists()
-        && settingId in ["orCounter", "paymentOrCounter"]
-        && request.resource.data.lastNumber == 1;
+      allow create: if isCounter(settingId)
+        && mayMoveCounter(settingId)
+        && request.resource.data.lastNumber >= 1;
 
-      allow update: if roleExists()
-        && settingId in ["orCounter", "paymentOrCounter"]
+      allow update: if isCounter(settingId)
+        && mayMoveCounter(settingId)
         && (
-             // same year: strictly incrementing
+             // same year: moves forward, never back
              (request.resource.data.year == resource.data.year
-               && request.resource.data.lastNumber == resource.data.lastNumber + 1)
+               && request.resource.data.lastNumber > resource.data.lastNumber)
              // new year: sequence restarts
              || (request.resource.data.year > resource.data.year
-               && request.resource.data.lastNumber == 1)
+               && request.resource.data.lastNumber >= 1)
            );
 
       allow delete: if false;

@@ -10,9 +10,10 @@ import {
   sortHistoryDesc,
   waterChargeOf,
   concessionaireDaysOverdue,
+  isAccountApproved,
   isDisconnectionEligible,
 } from "@/lib/billing";
-import { getFullName, formatPeso } from "@/lib/utils";
+import { formatCompactPeso, getFullName, formatPeso } from "@/lib/utils";
 import {
   Card,
   CardContent,
@@ -21,6 +22,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Pagination, usePagination } from "@/components/ui/pagination";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Table,
@@ -45,7 +47,36 @@ import {
   AreaChart,
   Area,
 } from "recharts";
-import { TrendingUp, FileText, Droplets, AlertTriangle, RefreshCw } from "lucide-react";
+import {
+  TrendingUp,
+  FileText,
+  Droplets,
+  AlertTriangle,
+  RefreshCw,
+  ChevronDown,
+  Download,
+  Layers,
+  Loader2,
+  type LucideIcon,
+} from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { useAuth } from "@/lib/auth/AuthContext";
+import { displayNameFor } from "@/lib/firebase/auth";
+import { userMessage } from "@/lib/userMessage";
+import {
+  ALL_REPORT_SECTIONS,
+  createReportsPdf,
+  loadPdfImage,
+  reportsPdfFileName,
+  type ReportSection,
+} from "@/lib/reports/reportsPdf";
 
 const TIER_LABELS: Record<ConcessionaireClassification, string> = {
   RESIDENTIAL: "Residential / Gov't",
@@ -72,8 +103,50 @@ const CONSUMPTION_BRACKETS = [
   { label: "50+ m³", min: 50, max: Infinity },
 ];
 
+const REPORT_TABS = ["collections", "consumption", "delinquency"];
+
+const PDF_OPTIONS: {
+  label: string;
+  hint: string;
+  sections: ReportSection[];
+  icon: LucideIcon;
+  /** Needs the monthly bills, which load separately from the accounts. */
+  needsBills: boolean;
+}[] = [
+  { label: "All reports", hint: "Collections, consumption and delinquency", sections: ALL_REPORT_SECTIONS, icon: Layers, needsBills: true },
+  { label: "Collection Summary", hint: "Billed and collected, by tier and month", sections: ["collections"], icon: FileText, needsBills: true },
+  { label: "Consumption Analysis", hint: "Accounts by monthly consumption", sections: ["consumption"], icon: Droplets, needsBills: false },
+  { label: "Delinquency Report", hint: "Unpaid balances and who can be disconnected", sections: ["delinquency"], icon: AlertTriangle, needsBills: false },
+];
+
 export default function ReportsPage() {
-  const { concessionaires, loading } = useConcessionaires("all", { realtime: true });
+  const { concessionaires: allConcessionaires, loading } = useConcessionaires("all", { realtime: true });
+
+  // The open tab is mirrored in the URL hash (/reports#delinquency), so a link
+  // — the disconnection notice in the header — can land on the right one.
+  const [tab, setTab] = useState("collections");
+  useEffect(() => {
+    const applyHash = () => {
+      const fromHash = window.location.hash.slice(1);
+      if (REPORT_TABS.includes(fromHash)) setTab(fromHash);
+    };
+    applyHash();
+    window.addEventListener("hashchange", applyHash);
+    return () => window.removeEventListener("hashchange", applyHash);
+  }, []);
+
+  function changeTab(value: string) {
+    setTab(value);
+    // Kept in step so following the same link again still switches back.
+    window.history.replaceState(window.history.state, "", `#${value}`);
+  }
+
+  // Accounts awaiting (or refused) admin approval aren't customers yet, so they
+  // count toward nothing here.
+  const concessionaires = useMemo(
+    () => allConcessionaires.filter(isAccountApproved),
+    [allConcessionaires]
+  );
 
   // ── Collection summary, by tier ──────────────────────────────────────────
   //
@@ -138,12 +211,16 @@ export default function ReportsPage() {
   // place that reads bills across accounts. Bounded: the chart shows recent
   // months, not the whole archive.
   const [bills, setBills] = useState<BillDocument[] | null>(null);
+  // Settled either way, so a failed read doesn't hold the PDF back forever —
+  // the monthly figures then fall back to what the accounts carry inline.
+  const [billsSettled, setBillsSettled] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     fetchRecentBills(1000)
       .then((rows) => !cancelled && setBills(rows))
-      .catch((e) => !cancelled && console.error("Failed to read bills", e));
+      .catch((e) => !cancelled && console.error("Failed to read bills", e))
+      .finally(() => !cancelled && setBillsSettled(true));
     return () => {
       cancelled = true;
     };
@@ -224,6 +301,8 @@ export default function ReportsPage() {
         return {
           id: c.id,
           name: getFullName(c),
+          meterNumber: c.meterNumber ?? "",
+          barangay: c.barangay ?? "",
           tier: TIER_LABELS[c.classification] ?? c.classification,
           balance: c.totalBalance,
           overdueDays,
@@ -232,6 +311,8 @@ export default function ReportsPage() {
       })
       .sort((a, b) => b.balance - a.balance);
   }, [concessionaires]);
+
+  const pagedDelinquents = usePagination(delinquentAccounts);
 
   const delinquencySummary = useMemo(
     () => ({
@@ -242,6 +323,43 @@ export default function ReportsPage() {
     }),
     [delinquentAccounts, concessionaires]
   );
+
+  // ── PDF download ─────────────────────────────────────────────────────────
+  const { user } = useAuth();
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+
+  async function downloadPdf(sections: ReportSection[]) {
+    setDownloading(true);
+    setDownloadError(null);
+    try {
+      const generatedAt = new Date();
+      const doc = await createReportsPdf(
+        sections,
+        {
+          collectionSummary,
+          monthlyCollections,
+          tiers,
+          tierColors: TIER_COLORS,
+          consumptionBrackets,
+          totalAccounts: concessionaires.length,
+          delinquentAccounts,
+          delinquencySummary,
+        },
+        {
+          generatedAt,
+          generatedBy: user ? displayNameFor(user) : "",
+          logo: await loadPdfImage("/logo.png"),
+        }
+      );
+      doc.save(reportsPdfFileName(sections, generatedAt));
+    } catch (e) {
+      console.error("Couldn't create the report PDF", e);
+      setDownloadError(userMessage(e, "Couldn't create the PDF. Please try again."));
+    } finally {
+      setDownloading(false);
+    }
+  }
 
   if (loading) {
     return (
@@ -254,16 +372,67 @@ export default function ReportsPage() {
   return (
     <div className="space-y-6">
       {/* Page Header */}
-      <div>
-        <h2 className="text-2xl font-bold tracking-tight text-slate-900">
-          Reports & Analytics
-        </h2>
-        <p className="text-sm text-slate-500">
-          Real collections, consumption, and delinquency data drawn from every concessionaire&apos;s billing history.
-        </p>
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h2 className="text-2xl font-bold tracking-tight text-slate-900">
+            Reports & Analytics
+          </h2>
+          <p className="text-sm text-slate-500">
+            Real collections, consumption, and delinquency data drawn from every concessionaire&apos;s billing history.
+          </p>
+        </div>
+
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            disabled={downloading}
+            className="inline-flex h-9 shrink-0 items-center gap-2 self-start rounded-md bg-sky-600 px-3.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-sky-700 outline-none focus-visible:ring-2 focus-visible:ring-sky-500 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-70"
+          >
+            {downloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+            {downloading ? "Preparing PDF…" : "Download PDF"}
+            {!downloading && <ChevronDown className="h-3.5 w-3.5 opacity-80" />}
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            align="end"
+            sideOffset={6}
+            className="w-72 rounded-xl border border-slate-200 bg-white p-1.5 shadow-lg"
+          >
+            {/* Base UI requires a label to sit inside the group it names. */}
+            <DropdownMenuGroup>
+              <DropdownMenuLabel className="px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                Choose what to include
+              </DropdownMenuLabel>
+              {PDF_OPTIONS.map((option) => {
+                const waiting = option.needsBills && !billsSettled;
+                return (
+                  <DropdownMenuItem
+                    key={option.label}
+                    disabled={waiting}
+                    onClick={() => downloadPdf(option.sections)}
+                    className="cursor-pointer items-start gap-2.5 rounded-lg px-2 py-2 focus:bg-slate-50"
+                  >
+                    <option.icon className="mt-0.5 size-4 text-slate-500" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm font-medium text-slate-900">{option.label}</span>
+                      <span className="block text-xs text-slate-500">
+                        {waiting ? "Loading monthly figures…" : option.hint}
+                      </span>
+                    </span>
+                  </DropdownMenuItem>
+                );
+              })}
+            </DropdownMenuGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
-      <Tabs defaultValue="collections" className="space-y-6">
+      {downloadError && (
+        <div className="flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
+          <p className="text-sm text-red-700">{downloadError}</p>
+        </div>
+      )}
+
+      <Tabs value={tab} onValueChange={(value) => changeTab(String(value))} className="space-y-6">
         <TabsList className="bg-slate-100">
           <TabsTrigger value="collections" className="text-xs">
             <FileText className="mr-1.5 h-3.5 w-3.5" />
@@ -302,7 +471,7 @@ export default function ReportsPage() {
                       <BarChart data={monthlyCollections}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
                         <XAxis dataKey="month" tick={{ fill: "#94a3b8", fontSize: 11 }} tickLine={false} axisLine={{ stroke: "#e2e8f0" }} />
-                        <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} tickLine={false} axisLine={false} tickFormatter={(v) => `₱${(Number(v) / 1000).toFixed(0)}k`} />
+                        <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} tickLine={false} axisLine={false} tickFormatter={(v) => formatCompactPeso(Number(v))} />
                         <Tooltip contentStyle={{ backgroundColor: "#fff", border: "1px solid #e2e8f0", borderRadius: "8px", fontSize: "12px" }} formatter={(v) => formatPeso(Number(v))} />
                         <Legend wrapperStyle={{ fontSize: "11px", paddingTop: "8px" }} />
                         {tiers.map((tier, i) => (
@@ -519,7 +688,7 @@ export default function ReportsPage() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {delinquentAccounts.map((account) => (
+                    {pagedDelinquents.rows.map((account) => (
                       <TableRow key={account.id}>
                         <TableCell className="text-sm font-medium text-slate-800">{account.name}</TableCell>
                         <TableCell>
@@ -551,6 +720,7 @@ export default function ReportsPage() {
                   </TableBody>
                 </Table>
               )}
+              <Pagination paged={pagedDelinquents} noun="accounts" className="mt-3" />
             </CardContent>
           </Card>
         </TabsContent>

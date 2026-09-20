@@ -11,9 +11,13 @@
 import { describe, expect, it } from "vitest";
 import {
   applyPaymentToHistory,
+  billableMonths,
+  canRequestReconnection,
   concessionaireDaysOverdue,
   currentMonthStr,
   delinquencyStart,
+  isAccountApproved,
+  isAwaitingFirstConnection,
   isConcessionaireDisconnectionEligible,
   isDisconnectionEligible,
   isPastGracePeriod,
@@ -329,8 +333,114 @@ describe("isPendingSync", () => {
     ).toBe(false);
   });
 
+  it("does not crash on an account with no billingHistory array", () => {
+    // Accounts imported or migrated since bills moved to a sub-collection carry
+    // no array at all. This used to throw `undefined.some` from the top bar.
+    const { billingHistory: _omitted, ...noArray } = assigned;
+    void _omitted;
+    expect(isPendingSync(noArray, "SEP 2026")).toBe(true);
+  });
+
+  it("treats a migrated account's latest bill as the answer", () => {
+    expect(
+      isPendingSync(
+        {
+          status: "CONNECTED",
+          assignedForReading: "SEP 2026",
+          billingSummary: { latestBill: record({ month: "SEP 2026" }) },
+        },
+        "SEP 2026"
+      )
+    ).toBe(false);
+  });
+
   it("ignores accounts that are not connected or not assigned", () => {
     expect(isPendingSync({ ...assigned, status: "DISCONNECTED" }, "SEP 2026")).toBe(false);
     expect(isPendingSync({ ...assigned, assignedForReading: "AUG 2026" }, "SEP 2026")).toBe(false);
+  });
+});
+
+// ── Account approval ─────────────────────────────────────────────────────────
+
+describe("isAccountApproved", () => {
+  it("treats accounts that predate approval as approved", () => {
+    // Every account created before approval existed has no status at all.
+    expect(isAccountApproved({})).toBe(true);
+    expect(isAccountApproved({ approvalStatus: undefined })).toBe(true);
+  });
+
+  it("approves only an explicit APPROVED", () => {
+    expect(isAccountApproved({ approvalStatus: "APPROVED" })).toBe(true);
+    expect(isAccountApproved({ approvalStatus: "PENDING" })).toBe(false);
+    expect(isAccountApproved({ approvalStatus: "REJECTED" })).toBe(false);
+  });
+
+  it("fails closed on anything unrecognised", () => {
+    // A typo'd or future status must not quietly let an account be billed.
+    expect(isAccountApproved({ approvalStatus: "approved" })).toBe(false);
+    expect(isAccountApproved({ approvalStatus: "" })).toBe(false);
+  });
+});
+
+describe("billableMonths", () => {
+  it("starts at the month you are in and walks backwards", () => {
+    const months = billableMonths(4, new Date(2026, 8, 20)); // SEP 2026
+    expect(months).toEqual(["SEP 2026", "AUG 2026", "JUL 2026", "JUN 2026"]);
+  });
+
+  it("crosses into the previous year", () => {
+    expect(billableMonths(3, new Date(2026, 0, 5))).toEqual(["JAN 2026", "DEC 2025", "NOV 2025"]);
+  });
+
+  it("offers a year by default", () => {
+    expect(billableMonths(undefined, new Date(2026, 8, 20))).toHaveLength(12);
+  });
+
+  it("writes months the rest of the system can parse", () => {
+    const months = billableMonths(6, new Date(2026, 8, 20));
+    expect(months[0]).toBe(currentMonthStr(new Date(2026, 8, 20)));
+    const keys = months.map(monthSortKey);
+    expect(keys).toEqual([...keys].sort((a, b) => b - a));
+    expect(keys.every((k) => k > 0)).toBe(true);
+  });
+});
+
+describe("never connected vs disconnected", () => {
+  const newAccount = {
+    status: "DISCONNECTED",
+    disconnectedReason: "NO CONNECTION YET",
+    billingHistory: [],
+  };
+  const cutOff = {
+    status: "DISCONNECTED",
+    disconnectedReason: "NON-PAYMENT",
+    connectionFeeDetails: { total: 1800 },
+    billingSummary: { monthsBilled: 7 },
+  };
+
+  it("treats a brand new account as awaiting its first connection", () => {
+    expect(isAwaitingFirstConnection(newAccount)).toBe(true);
+    expect(canRequestReconnection(newAccount)).toBe(false);
+  });
+
+  it("offers reconnection only for a line that was actually in service", () => {
+    expect(isAwaitingFirstConnection(cutOff)).toBe(false);
+    expect(canRequestReconnection(cutOff)).toBe(true);
+  });
+
+  it("counts an account with a connection set up as connected before", () => {
+    const setUpButOff = { status: "DISCONNECTED", connectionFeeDetails: { total: 1800 } };
+    expect(isAwaitingFirstConnection(setUpButOff)).toBe(false);
+    expect(canRequestReconnection(setUpButOff)).toBe(true);
+  });
+
+  it("counts an account that has been billed, even with no fee record", () => {
+    const billed = { status: "DISCONNECTED", billingSummary: { monthsBilled: 3 } };
+    expect(isAwaitingFirstConnection(billed)).toBe(false);
+  });
+
+  it("never offers reconnection for a line already connected or dropped", () => {
+    expect(canRequestReconnection({ status: "CONNECTED" })).toBe(false);
+    expect(canRequestReconnection({ status: "DROPPED", connectionFeeDetails: { total: 1 } })).toBe(false);
   });
 });

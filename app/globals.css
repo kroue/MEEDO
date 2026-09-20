@@ -125,3 +125,20 @@
     @apply hover:-translate-y-[2px] active:scale-[0.98] transition-all duration-200 ease-snappy;
   }
 }
+
+/* In-page printing (components/print/PrintHost.tsx). The document being printed
+   is rendered out of sight; while the print dialog is open it is the only thing
+   on the page, instead of the console around it. */
+[data-print-job] {
+  display: none;
+}
+
+@media print {
+  html.print-job-active body > *:not([data-print-job]) {
+    display: none !important;
+  }
+
+  html.print-job-active [data-print-job] {
+    display: block;
+  }
+}

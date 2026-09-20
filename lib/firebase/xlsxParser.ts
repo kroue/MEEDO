@@ -120,6 +120,10 @@ interface ConcessionaireRow {
 }
 
 const CONCESSIONAIRE_COLUMNS = {
+  // "Account No" is last on purpose: the office's older sheets label the
+  // meter column that way, so it is still accepted, but a sheet carrying both
+  // headers takes the meter one. Account numbers themselves are never read
+  // from a workbook — they are assigned when the account is created.
   meterNo: ["Meter No", "Meter Number", "Meter #", "Account No"],
   barangay: ["Barangay"],
   purok: ["Purok"],
@@ -456,6 +460,11 @@ export async function previewXlsxFile(
  * Builds and downloads a blank workbook with the three sheets above,
  * correctly headered plus one example row each, ready for the office to
  * fill in and re-upload via `parseXlsxFile`.
+ *
+ * There is deliberately no account number column: the meter number is typed
+ * in from the meter, while the account number is assigned when the account is
+ * created — including by the import itself — so a workbook can neither set
+ * one nor change one.
  */
 export function downloadImportTemplate(): void {
   const wb = XLSX.utils.book_new();

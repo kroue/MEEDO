@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { BARANGAYS, type Concessionaire } from "@/lib/firebase/types";
 import { getFullName } from "@/lib/utils";
+import { isAccountApproved } from "@/lib/billing";
 
 export function NewConnectionDialog({
   open,
@@ -21,7 +22,8 @@ export function NewConnectionDialog({
   const [selectedId, setSelectedId] = useState<string>("");
 
   // Filter out those who already have connectionFeeDetails
-  let available = allConcessionaires.filter(c => !c.connectionFeeDetails);
+  // Nothing happens on an account an admin hasn't approved yet.
+  let available = allConcessionaires.filter(c => !c.connectionFeeDetails && isAccountApproved(c));
   
   if (barangay !== "all") {
     available = available.filter(c => c.barangay === barangay);

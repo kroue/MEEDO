@@ -23,6 +23,7 @@
  * re-run it.
  */
 
+import { userMessage } from "../userMessage";
 import {
   collection,
   doc,
@@ -179,7 +180,7 @@ export async function backfillSubcollections(
         progress.migrated += 1;
       } catch (err) {
         progress.errors.push(
-          `${data.meterNumber || id}: ${err instanceof Error ? err.message : String(err)}`
+          `${data.meterNumber || id}: ${userMessage(err)}`
         );
       }
 
@@ -189,7 +190,7 @@ export async function backfillSubcollections(
 
   logAuditEvent(
     "Data Sync",
-    `Sub-collection backfill: ${progress.migrated} account(s) migrated, ${progress.skipped} already done, ` +
+    `Storage migration backfill: ${progress.migrated} account(s) migrated, ${progress.skipped} already done, ` +
       `${progress.billsWritten} bill(s) and ${progress.paymentsWritten} payment(s) written` +
       `${progress.errors.length ? `, ${progress.errors.length} error(s)` : ""}.`,
     actorEmail
@@ -228,7 +229,7 @@ export async function dropLegacyArrays(
 
       if (!data.billingSummary) {
         progress.errors.push(
-          `${data.meterNumber || id}: no billingSummary — run the backfill first. Left untouched.`
+          `${data.meterNumber || id}: not backfilled yet — run the backfill first. Left untouched.`
         );
         onProgress?.({ ...progress });
         continue;
@@ -252,8 +253,8 @@ export async function dropLegacyArrays(
         if (missingBills.length > 0 || missingPayments.length > 0) {
           progress.errors.push(
             `${data.meterNumber || id}: ${missingBills.length} bill(s) and ` +
-              `${missingPayments.length} payment(s) not found in the sub-collections. ` +
-              `Arrays kept — re-run the backfill.`
+              `${missingPayments.length} payment(s) haven't been copied yet. ` +
+              `Nothing removed — run the backfill again.`
           );
           onProgress?.({ ...progress });
           continue;
@@ -268,7 +269,7 @@ export async function dropLegacyArrays(
         progress.migrated += 1;
       } catch (err) {
         progress.errors.push(
-          `${data.meterNumber || id}: ${err instanceof Error ? err.message : String(err)}`
+          `${data.meterNumber || id}: ${userMessage(err)}`
         );
       }
 
@@ -278,7 +279,7 @@ export async function dropLegacyArrays(
 
   logAuditEvent(
     "Data Sync",
-    `Legacy array cleanup: ${progress.migrated} account(s) cleaned, ${progress.skipped} already clean` +
+    `Storage migration cleanup: ${progress.migrated} account(s) cleaned, ${progress.skipped} already clean` +
       `${progress.errors.length ? `, ${progress.errors.length} skipped with problems` : ""}.`,
     actorEmail
   );

@@ -97,10 +97,13 @@ export interface MeterPayment {
   /** Payment slot label, e.g. "1st", "2nd", "3rd", "4th" */
   slot: "1st" | "2nd" | "3rd" | "4th" | "Full" | string;
   amount: number;
+  /** Official Receipt number, typed from the booklet. Never generated. */
   orNumber: string;
   date?: string; // ISO string
-  /** Email of the admin who recorded this payment. */
+  /** Email of whoever took the payment at the counter. */
   recordedBy?: string;
+  /** Email of the admin who released it from the approval queue, if any. */
+  approvedBy?: string;
   /** Set when reversed — the row stays so the OR number stays accounted for. */
   voided?: boolean;
   voidedAt?: string;
@@ -130,13 +133,22 @@ export interface ConnectionFeeDetails {
  * running total the mobile app rolls into the next bill's overdue balance.
  */
 export interface PaymentRecord {
-  /** Sequential receipt number, e.g. "PMT-2026-000042" */
+  /**
+   * The Official Receipt number, copied from the booklet the treasury issues
+   * against the Business Tax listing. Typed in by whoever took the cash, never
+   * generated, and unique: it is this payment's document id.
+   */
   orNumber: string;
   amount: number;
   /** ISO timestamp of the transaction */
   date: string;
-  /** Email of the admin who recorded this payment. */
+  /** Email of whoever took the payment at the counter. */
   recordedBy: string;
+  /**
+   * Email of the admin who released this payment from the approval queue.
+   * Absent on payments an admin recorded directly.
+   */
+  approvedBy?: string;
   balanceBefore: number;
   balanceAfter: number;
   /**
@@ -230,6 +242,15 @@ export const DISCONNECTED_REASONS = [
 
 export type DisconnectedReason = (typeof DISCONNECTED_REASONS)[number];
 
+// ── Approval ────────────────────────────────────────────────────────────────
+
+/**
+ * Whether an admin has confirmed a concessionaire account. Staff may create
+ * accounts, but only as PENDING requests; see `isAccountApproved` in
+ * lib/billing.ts for what that shuts an account out of until it's approved.
+ */
+export type ApprovalStatus = "PENDING" | "APPROVED" | "REJECTED";
+
 // ── Remarks ───────────────────────────────────────────────────────────────
 
 export interface Remark {
@@ -252,6 +273,15 @@ export interface Concessionaire {
   // ── Identifiers ──
   barangay: string;
   purok: string;
+  /**
+   * The account's own number, e.g. "2026-000042" — assigned by the system when
+   * the account is opened and never edited. Separate from the meter number on
+   * purpose: a meter can be replaced or swapped between households, while the
+   * account it serves carries on. Absent on accounts opened before numbering
+   * existed; see lib/accountNumber.ts.
+   */
+  accountNumber?: string;
+  /** Stamped on the meter itself, typed in by hand. */
   meterNumber: string;
   firstName: string;
   middleName: string;
@@ -333,6 +363,24 @@ export interface Concessionaire {
   // ── Connection Fees ──
   connectionFeeDetails?: ConnectionFeeDetails;
 
+  // ── Approval ──
+  /**
+   * Absent means approved: every account created before approval existed, and
+   * everything an admin creates or imports. A staff-created account starts
+   * PENDING and stays out of reading assignments, billing and payments until an
+   * admin approves it. The Firestore rules — not just the console — stop staff
+   * from setting this to anything but PENDING, or changing it afterwards.
+   */
+  approvalStatus?: ApprovalStatus;
+  /** Email of whoever created the request. */
+  approvalRequestedBy?: string;
+  approvalRequestedAt?: string;
+  /** Email of the admin who approved or rejected it. */
+  approvalReviewedBy?: string;
+  approvalReviewedAt?: string;
+  /** Why an admin rejected it — shown back to the staff member who asked. */
+  approvalRejectionReason?: string;
+
   // ── Sync ──
   assignedForReading?: string; // e.g. "AUG 2026"
 
@@ -358,3 +406,69 @@ export type NewConcessionaireInput = Omit<Concessionaire, "id" | "createdAt" | "
 export function getCubicUsed(record: MonthlyBillingRecord): number {
   return Math.max(0, record.reading - record.previousReading);
 }
+
+// ── Staff requests waiting on an admin ──────────────────────────────────────
+
+/**
+ * What a staff member asked to do. Money and service changes are the admin's
+ * call, so staff submit the intent and an admin applies it — nothing reaches
+ * an account's balance, fees or status until then.
+ */
+export type ServiceRequestKind =
+  /** A payment against the water bill, taken at the counter. */
+  | "WATER_PAYMENT"
+  /** A connection fee installment. */
+  | "CONNECTION_PAYMENT"
+  /** Setting up (or revising) an account's connection fee breakdown. */
+  | "CONNECTION_SETUP"
+  /** Putting a disconnected line back in service. */
+  | "RECONNECTION";
+
+/**
+ * PENDING   — waiting for an admin.
+ * APPROVED  — reconnection only: the fee is in, the crew is going out. The
+ *             line is not back in service yet.
+ * COMPLETED — applied to the account: payment posted, fees set up, or the
+ *             admin confirmed the line is live again.
+ * REJECTED  — refused, with a reason. Nothing was applied.
+ */
+export type ServiceRequestStatus = "PENDING" | "APPROVED" | "COMPLETED" | "REJECTED";
+
+export interface ServiceRequest {
+  /** Firestore document ID — injected client-side after fetch. */
+  id: string;
+  kind: ServiceRequestKind;
+  status: ServiceRequestStatus;
+
+  // Who it is about. Copied at submission so the queue lists itself without
+  // reading every account.
+  concessionaireId: string;
+  concessionaireName: string;
+  barangay: string;
+  meterNumber: string;
+
+  /** Amount involved, for the kinds that move money. */
+  amount?: number;
+  /** Receipt number, typed from the booklet. Never generated. */
+  orNumber?: string;
+  /** Connection fee installment slot ("1st", "Full", …). */
+  slot?: string;
+  /** The fee breakdown proposed by a connection setup request. */
+  connectionFeeDetails?: ConnectionFeeDetails;
+  /** Anything the requester wanted the admin to know. */
+  note?: string;
+
+  requestedBy: string;
+  requestedAt: string;
+  /** Admin who approved, rejected, or dispatched the crew. */
+  reviewedBy?: string;
+  reviewedAt?: string;
+  rejectionReason?: string;
+  /** Admin who applied it — posted the payment, or confirmed the line is live. */
+  completedBy?: string;
+  completedAt?: string;
+  /** Plain sentence of what applying it did, kept for the audit trail. */
+  outcome?: string;
+}
+
+export type NewServiceRequest = Omit<ServiceRequest, "id">;

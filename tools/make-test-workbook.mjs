@@ -14,6 +14,11 @@
  *
  * Every peso figure is computed from the Board-approved rate card rather than
  * typed in, so the file stays self-consistent if the rates are edited here.
+ *
+ * There is no account number column, matching the template: the meter number
+ * is typed in from the meter, while account numbers are assigned by the import
+ * itself. (The "Account No" header, which the office's older exports use for
+ * the meter column, is covered by the in-memory cases in xlsxParser.test.ts.)
  */
 
 import * as XLSX from "xlsx";

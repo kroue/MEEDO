@@ -1,5 +1,6 @@
 "use client";
 
+import { userMessage } from "@/lib/userMessage";
 import { useState, useTransition } from "react";
 import {
   Card,
@@ -37,6 +38,7 @@ import {
 } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ConcessionaireDialog } from "@/components/ConcessionaireDialog";
+import { Pagination, usePagination } from "@/components/ui/pagination";
 import { useRouter } from "next/navigation";
 import {
   MapPin,
@@ -109,6 +111,11 @@ function ConcessionaireRow({
       </TableCell>
       <TableCell>
         <code className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-mono text-slate-600">
+          {concessionaire.accountNumber || "—"}
+        </code>
+      </TableCell>
+      <TableCell>
+        <code className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-mono text-slate-600">
           {concessionaire.meterNumber}
         </code>
       </TableCell>
@@ -118,12 +125,22 @@ function ConcessionaireRow({
         </span>
       </TableCell>
       <TableCell>
-        <Badge
-          variant={concessionaire.status === "CONNECTED" ? "default" : "destructive"}
-          className={concessionaire.status === "CONNECTED" ? "bg-emerald-500 hover:bg-emerald-600" : ""}
-        >
-          {concessionaire.status || "CONNECTED"}
-        </Badge>
+        {concessionaire.approvalStatus === "PENDING" ? (
+          <Badge variant="secondary" className="bg-amber-50 text-amber-700 border-amber-200">
+            AWAITING APPROVAL
+          </Badge>
+        ) : concessionaire.approvalStatus === "REJECTED" ? (
+          <Badge variant="secondary" className="bg-red-50 text-red-700 border-red-200">
+            REJECTED
+          </Badge>
+        ) : (
+          <Badge
+            variant={concessionaire.status === "CONNECTED" ? "default" : "destructive"}
+            className={concessionaire.status === "CONNECTED" ? "bg-emerald-500 hover:bg-emerald-600" : ""}
+          >
+            {concessionaire.status || "CONNECTED"}
+          </Badge>
+        )}
       </TableCell>
     </TableRow>
   );
@@ -135,6 +152,9 @@ import React from "react";
 export default function ConcessionairesPage() {
   const { role } = useAuth();
   const canEdit = role === "admin";
+  // Staff can add accounts too, but theirs wait for an admin's approval.
+  const canAdd = role === "admin" || role === "staff";
+  const [notice, setNotice] = useState<string | null>(null);
   const [selectedBarangay, setSelectedBarangay] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -149,9 +169,12 @@ export default function ConcessionairesPage() {
     return (
       fullName.includes(q) ||
       c.meterNumber.toLowerCase().includes(q) ||
+      (c.accountNumber ?? "").toLowerCase().includes(q) ||
       c.purok.toLowerCase().includes(q)
     );
   });
+
+  const pagedConcessionaires = usePagination(filteredConcessionaires);
 
   // KPI aggregates (removed)
 
@@ -164,16 +187,16 @@ export default function ConcessionairesPage() {
             Concessionaires
           </h2>
           <p className="text-sm font-medium text-slate-500 mt-0.5">
-            Firestore-backed concessionaire records, organized by barangay.
+            Concessionaire records, organized by barangay.
           </p>
         </div>
-        {canEdit && (
+        {canAdd && (
           <Button
             onClick={() => {
+              setNotice(null);
               setEditData(null);
               setSheetOpen(true);
             }}
-            disabled={!selectedBarangay}
             className="bg-sky-600 hover:bg-sky-700 text-white font-semibold gap-2 shadow-sm"
           >
             <Plus className="h-4 w-4" />
@@ -181,6 +204,13 @@ export default function ConcessionairesPage() {
           </Button>
         )}
       </div>
+
+      {notice && (
+        <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-5 py-4">
+          <AlertCircle className="h-5 w-5 text-amber-500 mt-0.5 shrink-0" />
+          <p className="text-sm text-amber-900">{notice}</p>
+        </div>
+      )}
 
       {/* Barangay Selector */}
       <Card className="bg-white/80 backdrop-blur-md border-slate-200/60 shadow-sm animate-in fade-in slide-in-from-bottom-4 duration-500 ease-snappy delay-100 fill-mode-backwards">
@@ -192,7 +222,7 @@ export default function ConcessionairesPage() {
             </CardTitle>
           </div>
           <CardDescription className="text-xs text-slate-500">
-            Choose a barangay to load its concessionaire records from Firestore.
+            Choose a barangay to load its concessionaire records.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -248,11 +278,7 @@ export default function ConcessionairesPage() {
               Failed to load concessionaires
             </p>
             <p className="text-xs text-red-600 mt-0.5">
-              {error.message}. Check your Firebase config in{" "}
-              <code className="font-mono bg-red-100 px-1 py-0.5 rounded">
-                .env.local
-              </code>{" "}
-              and your Firestore security rules.
+              {userMessage(error)} If this keeps happening, contact your system administrator.
             </p>
           </div>
         </div>
@@ -269,7 +295,7 @@ export default function ConcessionairesPage() {
           </h3>
           <p className="text-sm text-slate-400 mt-1 max-w-xs">
             Select a barangay from the dropdown above to load its concessionaire
-            records from Firestore.
+            records.
           </p>
         </div>
       )}
@@ -318,6 +344,7 @@ export default function ConcessionairesPage() {
                   <TableRow className="hover:bg-transparent border-slate-200/60">
                     {[
                       "Concessionaire",
+                      "Account #",
                       "Meter #",
                       "Class",
                       "Status",
@@ -348,7 +375,7 @@ export default function ConcessionairesPage() {
                       </TableCell>
                     </TableRow>
                   ) : (
-                    filteredConcessionaires.map((c) => (
+                    pagedConcessionaires.rows.map((c) => (
                       <ConcessionaireRow 
                         key={c.id} 
                         concessionaire={c}
@@ -358,6 +385,7 @@ export default function ConcessionairesPage() {
                 </TableBody>
               </Table>
             </div>
+            <Pagination paged={pagedConcessionaires} noun="concessionaires" className="mt-3" />
           </div>
         </Card>
       )}
@@ -370,7 +398,21 @@ export default function ConcessionairesPage() {
           setEditData(null);
         }}
         selectedBarangay={selectedBarangay}
-        onSuccess={refresh}
+        onSuccess={(outcome, barangay) => {
+          // Adding from the empty state is allowed — the form asks for the
+          // barangay itself — so follow the new record rather than leaving the
+          // list on whatever was showing before.
+          if (barangay && barangay !== selectedBarangay) {
+            setSearch("");
+            setSelectedBarangay(barangay);
+          }
+          refresh();
+          if (outcome === "submitted") {
+            setNotice(
+              "Request sent. An admin has to approve this account before it can be read, billed, or take payments."
+            );
+          }
+        }}
         editData={editData}
       />
     </div>

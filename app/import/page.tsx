@@ -1,5 +1,6 @@
 "use client";
 
+import { userMessage } from "@/lib/userMessage";
 import { useState, useRef, useTransition, useCallback, useMemo, useEffect } from "react";
 import {
   Card,
@@ -199,7 +200,7 @@ function ProgressBar({ value, max }: { value: number; max: number }) {
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between text-xs font-semibold text-slate-600">
-        <span>Uploading to Firestore…</span>
+        <span>Uploading records…</span>
         <span>{pct}%</span>
       </div>
       <div className="h-2 rounded-full bg-slate-200 overflow-hidden">
@@ -269,7 +270,7 @@ export default function ImportPage() {
       setSelectedSheets(new Set(result.sheets.map((s) => s.barangay)));
       setStatus("ready");
     } catch (err) {
-      setParseError(err instanceof Error ? err.message : "Failed to parse file.");
+      setParseError(userMessage(err, "Failed to parse file."));
       setStatus("error");
     }
   }
@@ -292,7 +293,7 @@ export default function ImportPage() {
     );
   }
 
-  // ── Upload to Firestore ──────────────────────────────────────────────────
+  // ── Upload ─────────────────────────────────────────────────────────────
 
   const selectedRows = useMemo<NewConcessionaireInput[]>(() => {
     if (!parsed) return [];
@@ -378,7 +379,7 @@ export default function ImportPage() {
           </h2>
           <p className="text-sm font-medium text-slate-500">
             Upload a workbook built from the template — concessionaires, billing history, and
-            connection payments are parsed and pushed to Firestore.
+            connection payments are read from the file and saved.
           </p>
         </div>
         <Button
@@ -503,6 +504,18 @@ export default function ImportPage() {
               {uploadResult.updated > 0 && `, ${uploadResult.updated.toLocaleString()} updated`}
               {uploadResult.skipped > 0 && `, ${uploadResult.skipped.toLocaleString()} skipped`}
             </p>
+            {uploadResult.accountNumbers && (
+              <p className="text-xs font-medium text-slate-600 mt-0.5">
+                Account numbers assigned:{" "}
+                <span className="font-mono">{uploadResult.accountNumbers.first}</span>
+                {uploadResult.accountNumbers.first !== uploadResult.accountNumbers.last && (
+                  <>
+                    {" – "}
+                    <span className="font-mono">{uploadResult.accountNumbers.last}</span>
+                  </>
+                )}
+              </p>
+            )}
             <p className="text-xs text-slate-500 mt-0.5">
               Existing accounts are matched by meter number, so re-importing the same workbook
               never creates a duplicate.
@@ -645,7 +658,7 @@ export default function ImportPage() {
               ) : (
                 <>
                   <CloudUpload className="h-4 w-4" />
-                  Upload to Firestore
+                  Upload Records
                 </>
               )}
             </Button>
@@ -671,7 +684,8 @@ export default function ImportPage() {
               Meter No, Barangay, Purok, First/Middle/Last Name, Classification (RESIDENTIAL /
               COMMERCIAL A / COMMERCIAL B / GOVERNMENT), Status (CONNECTED / DISCONNECTED /
               DROPPED), Disconnected Reason, Billing Balance, Water Meter Fee, Application Fee,
-              Inspection Fee, Other Payables, Remarks.
+              Inspection Fee, Other Payables, Remarks. No account number column — the meter number
+              is what you type, and each new account is given its account number on import.
             </p>
           </div>
           <div>
@@ -709,6 +723,8 @@ export default function ImportPage() {
               "Water Meter Balance = (Water Meter Fee + Application Fee + Inspection Fee + Other Payables) − sum of Connection Payments",
               "Total Balance = Billing Balance + Water Meter Balance",
               "Rows with no Meter No or no name are skipped, not imported as blank accounts",
+              "Account numbers are not in the workbook — each new account is given one on import, like 2026-000042",
+              "An account already in the system keeps the account number it was given",
               "Header text matching is case-insensitive — \"Meter No\", \"meter no.\", and \"Meter Number\" all work",
               "Billing History / Connection Payments rows referencing an unknown Meter No are silently ignored",
               "Excel date cells (e.g. Billing Date) are converted automatically — no need to format as text",

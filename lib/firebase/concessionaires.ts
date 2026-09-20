@@ -6,6 +6,7 @@
  * Server Actions as needed.
  */
 
+import { userMessage } from "../userMessage";
 import {
   collection,
   doc,
@@ -29,6 +30,8 @@ import { db } from "./firebase";
 import { logAuditEvent } from "./auditLog";
 import { monthKeyFor, ownerFieldsOf } from "./bills";
 import { sortHistoryDesc, waterChargeOf } from "../billing";
+import { DuplicateOrNumberError, requireOrNumber } from "../receipts";
+import { reserveAccountNumber, reserveAccountNumbers } from "./accountNumbers";
 import { getFullName } from "../utils";
 import type { Concessionaire, NewConcessionaireInput } from "./types";
 
@@ -137,7 +140,12 @@ export async function isMeterNumberTaken(
   // rather than an equality query that would miss a case difference.
   const snapshot = await getDocs(concessionairesRef());
   return snapshot.docs.some(
-    (d) => d.id !== exceptId && meterKeyOf(d.data().meterNumber as string | undefined) === key
+    (d) =>
+      d.id !== exceptId &&
+      // A rejected request never became an account, so it mustn't block the
+      // corrected one that follows it.
+      d.data().approvalStatus !== "REJECTED" &&
+      meterKeyOf(d.data().meterNumber as string | undefined) === key
   );
 }
 
@@ -145,30 +153,187 @@ export async function isMeterNumberTaken(
  * Add a new concessionaire document to Firestore.
  * Returns the new document ID.
  *
+ * An admin's account is live immediately. A staff member's is created as a
+ * PENDING request that an admin has to approve before the account can be
+ * assigned for reading, billed, or take payments. The Firestore rules enforce
+ * the same thing, so this can't be bypassed from outside the console.
+ *
  * Rejects a meter number already in use — see [isMeterNumberTaken].
+ *
+ * The account number is assigned here, not typed in: it identifies the
+ * account rather than the hardware, so it is the system's to hand out.
  */
 export async function addConcessionaire(
   data: NewConcessionaireInput,
-  actorEmail: string
+  actorEmail: string,
+  actorRole: "admin" | "staff"
 ): Promise<string> {
   if (await isMeterNumberTaken(data.meterNumber)) {
     throw new DuplicateMeterNumberError(data.meterNumber);
   }
+
+  // New accounts start in the sub-collection shape: no legacy billingHistory
+  // array, and an empty summary. A staff request can't arrive already on a
+  // reading route either.
+  const { billingHistory: _legacyHistory, assignedForReading: _route, ...rest } = data;
+  void _legacyHistory;
+  void _route;
+
+  const accountNumber = data.accountNumber?.trim() || (await reserveAccountNumber());
+
+  const now = new Date().toISOString();
+  const approval =
+    actorRole === "admin"
+      ? {
+          approvalStatus: "APPROVED" as const,
+          approvalRequestedBy: actorEmail,
+          approvalRequestedAt: now,
+          approvalReviewedBy: actorEmail,
+          approvalReviewedAt: now,
+        }
+      : {
+          approvalStatus: "PENDING" as const,
+          approvalRequestedBy: actorEmail,
+          approvalRequestedAt: now,
+        };
+
   const docRef = await addDoc(concessionairesRef(), {
-    ...data,
-    billingHistory: data.billingHistory ?? [],
+    ...rest,
+    accountNumber,
+    ...(actorRole === "admin" && data.assignedForReading
+      ? { assignedForReading: data.assignedForReading }
+      : {}),
+    ...approval,
     meterPayments: data.meterPayments ?? [],
+    billingSummary: {
+      monthsBilled: 0,
+      totalWaterCharged: 0,
+      totalCollected: 0,
+      latestBill: null,
+      previousBill: null,
+    },
     createdBy: actorEmail,
     updatedBy: actorEmail,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
+
   logAuditEvent(
     "Account Update",
-    `Created concessionaire ${getFullName(data)} (${data.meterNumber || "no meter #"}) in ${data.barangay}.`,
+    actorRole === "admin"
+      ? `Created concessionaire ${getFullName(data)}, account ${accountNumber} (${data.meterNumber || "no meter #"}) in ${data.barangay}.`
+      : `Requested a new concessionaire account for ${getFullName(data)}, account ${accountNumber} (${data.meterNumber || "no meter #"}) in ${data.barangay} — awaiting admin approval.`,
     actorEmail
   );
   return docRef.id;
+}
+
+export class ApprovalStateError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ApprovalStateError";
+  }
+}
+
+/**
+ * Concessionaires awaiting a decision, and recent refusals — the approval
+ * queue on the Concessionaires page and the count in the sidebar.
+ */
+export function subscribeToApprovalQueue(
+  onData: (accounts: Concessionaire[]) => void,
+  onError: (error: Error) => void
+): Unsubscribe {
+  return onSnapshot(
+    query(concessionairesRef(), where("approvalStatus", "in", ["PENDING", "REJECTED"])),
+    (snapshot) => onData(mapSnapshot(snapshot)),
+    (err) => onError(err)
+  );
+}
+
+/**
+ * Every account one staff member has submitted, whatever became of it — how
+ * the notifications menu tells them a request was approved or turned down.
+ */
+export function subscribeToMyApprovalRequests(
+  requestedBy: string,
+  onData: (accounts: Concessionaire[]) => void,
+  onError: (error: Error) => void
+): Unsubscribe {
+  return onSnapshot(
+    query(concessionairesRef(), where("approvalRequestedBy", "==", requestedBy)),
+    (snapshot) => onData(mapSnapshot(snapshot)),
+    (err) => onError(err)
+  );
+}
+
+/** Approves a pending account. Admin only — the rules refuse anyone else. */
+export async function approveConcessionaire(
+  concessionaireId: string,
+  actorEmail: string
+): Promise<void> {
+  const docRef = doc(db, CONCESSIONAIRES_COLLECTION, concessionaireId);
+  const name = await runTransaction(db, async (transaction) => {
+    const snapshot = await transaction.get(docRef);
+    if (!snapshot.exists()) throw new ApprovalStateError("That account no longer exists.");
+    const data = snapshot.data() as Concessionaire;
+    if (data.approvalStatus !== "PENDING") {
+      throw new ApprovalStateError("This account isn't waiting for approval any more.");
+    }
+    transaction.update(docRef, {
+      approvalStatus: "APPROVED",
+      approvalReviewedBy: actorEmail,
+      approvalReviewedAt: new Date().toISOString(),
+      approvalRejectionReason: deleteField(),
+      updatedBy: actorEmail,
+      updatedAt: serverTimestamp(),
+    });
+    return getFullName(data);
+  });
+
+  logAuditEvent(
+    "Account Update",
+    `Approved the new concessionaire account for ${name || concessionaireId}.`,
+    actorEmail
+  );
+}
+
+/**
+ * Rejects a pending account, with a reason the requester will see. The record
+ * is kept rather than deleted so the request stays on the audit trail; its
+ * meter number is freed for a corrected request.
+ */
+export async function rejectConcessionaire(
+  concessionaireId: string,
+  reason: string,
+  actorEmail: string
+): Promise<void> {
+  const trimmed = reason.trim();
+  if (!trimmed) throw new ApprovalStateError("Give a reason so the staff member knows what to fix.");
+
+  const docRef = doc(db, CONCESSIONAIRES_COLLECTION, concessionaireId);
+  const name = await runTransaction(db, async (transaction) => {
+    const snapshot = await transaction.get(docRef);
+    if (!snapshot.exists()) throw new ApprovalStateError("That account no longer exists.");
+    const data = snapshot.data() as Concessionaire;
+    if (data.approvalStatus !== "PENDING") {
+      throw new ApprovalStateError("This account isn't waiting for approval any more.");
+    }
+    transaction.update(docRef, {
+      approvalStatus: "REJECTED",
+      approvalReviewedBy: actorEmail,
+      approvalReviewedAt: new Date().toISOString(),
+      approvalRejectionReason: trimmed,
+      updatedBy: actorEmail,
+      updatedAt: serverTimestamp(),
+    });
+    return getFullName(data);
+  });
+
+  logAuditEvent(
+    "Account Update",
+    `Rejected the new concessionaire account for ${name || concessionaireId}. Reason: ${trimmed}`,
+    actorEmail
+  );
 }
 
 // ── UPDATE — Status & Details (New for Editing) ────────────────────────────
@@ -205,35 +370,61 @@ export async function addRemark(concessionaireId: string, remark: import("./type
 
 // ── UPDATE — Connections ───────────────────────────────────────────────────
 
+/**
+ * Sets up (or revises) an account's connection fee and puts the line in
+ * service.
+ *
+ * The balances are worked out here, inside a transaction, from what the
+ * account actually holds. They used to be passed in by the caller, which was
+ * fine on the Connections page — it had the account on screen — but wrong
+ * everywhere else: approving a staff member's setup request from the queue
+ * had no billing balance to hand, so it wrote the fee as the whole of
+ * `totalBalance` and quietly erased whatever the household owed on water.
+ *
+ * Applying the same setup twice lands on the same numbers rather than adding
+ * the fee again, so two admins working the approval queue can't double it.
+ */
 export async function updateConnectionFeeDetails(
   concessionaireId: string,
   connectionFeeDetails: import("./types").ConnectionFeeDetails,
-  waterMeterBalance: number,
-  totalBalance: number,
   actorEmail: string,
   newRemark?: import("./types").Remark
-): Promise<void> {
+): Promise<{ waterMeterBalance: number; totalBalance: number }> {
   const docRef = doc(db, CONCESSIONAIRES_COLLECTION, concessionaireId);
-  const updates: any = {
-    connectionFeeDetails: { ...connectionFeeDetails, updatedBy: actorEmail },
-    waterMeterBalance,
-    totalBalance,
-    status: "CONNECTED",
-    disconnectedReason: deleteField(),
-    updatedBy: actorEmail,
-    updatedAt: serverTimestamp(),
-  };
 
-  if (newRemark) {
-    updates.remarks = arrayUnion(newRemark);
-  }
+  const result = await runTransaction(db, async (transaction) => {
+    const snapshot = await transaction.get(docRef);
+    if (!snapshot.exists()) throw new Error("Concessionaire not found.");
 
-  await updateDoc(docRef, updates);
+    const data = snapshot.data() as Concessionaire;
+    const paidSoFar = (data.meterPayments ?? []).reduce(
+      (sum, p) => (p.voided ? sum : sum + p.amount),
+      0
+    );
+    // What is still owed on the connection, net of installments already taken.
+    const waterMeterBalance = Math.max(0, toCentavos(connectionFeeDetails.total - paidSoFar));
+    const totalBalance = toCentavos((data.billingBalance ?? 0) + waterMeterBalance);
+
+    transaction.update(docRef, {
+      connectionFeeDetails: { ...connectionFeeDetails, updatedBy: actorEmail },
+      waterMeterBalance,
+      totalBalance,
+      status: "CONNECTED",
+      disconnectedReason: deleteField(),
+      ...(newRemark ? { remarks: arrayUnion(newRemark) } : {}),
+      updatedBy: actorEmail,
+      updatedAt: serverTimestamp(),
+    });
+
+    return { waterMeterBalance, totalBalance };
+  });
+
   logAuditEvent(
     "Account Update",
     `Set up connection fee (${connectionFeeDetails.total}) for concessionaire ${concessionaireId}.`,
     actorEmail
   );
+  return result;
 }
 
 export class InvalidMeterPaymentError extends Error {
@@ -263,12 +454,14 @@ function toCentavos(value: number): number {
 export async function addMeterPayment(
   concessionaireId: string,
   payment: import("./types").MeterPayment,
-  actorEmail: string
+  actorEmail: string,
+  options: { approvedBy?: string } = {}
 ): Promise<{ newWaterMeterBalance: number; newTotalBalance: number }> {
   const amount = toCentavos(payment.amount);
   if (!(amount > 0) || !Number.isFinite(amount)) {
     throw new InvalidMeterPaymentError("Payment amount must be greater than zero.");
   }
+  const orNumber = requireOrNumber(payment.orNumber);
 
   const docRef = doc(db, CONCESSIONAIRES_COLLECTION, concessionaireId);
 
@@ -291,12 +484,26 @@ export async function addMeterPayment(
         `A ${payment.slot} payment has already been recorded for this connection.`
       );
     }
+    // The receipt number comes off a paper receipt, so the same one twice
+    // means a mistyped entry — or the same payment being recorded again.
+    if (meterPayments.some((p) => p.orNumber === orNumber)) {
+      throw new DuplicateOrNumberError(orNumber);
+    }
 
     const newWaterMeterBalance = toCentavos(waterMeterBalance - amount);
     const newTotalBalance = toCentavos(billingBalance + newWaterMeterBalance);
 
     transaction.update(docRef, {
-      meterPayments: [...meterPayments, { ...payment, amount, recordedBy: actorEmail }],
+      meterPayments: [
+        ...meterPayments,
+        {
+          ...payment,
+          amount,
+          orNumber,
+          recordedBy: actorEmail,
+          ...(options.approvedBy ? { approvedBy: options.approvedBy } : {}),
+        },
+      ],
       waterMeterBalance: newWaterMeterBalance,
       totalBalance: newTotalBalance,
       updatedBy: actorEmail,
@@ -308,7 +515,7 @@ export async function addMeterPayment(
 
   logAuditEvent(
     "Payment",
-    `Recorded connection fee payment of ₱${amount.toFixed(2)} (${payment.slot}) for concessionaire ${concessionaireId}. OR ${payment.orNumber}.`,
+    `Recorded connection fee payment of ₱${amount.toFixed(2)} (${payment.slot}) for concessionaire ${concessionaireId}. OR ${orNumber}.`,
     actorEmail
   );
 
@@ -402,6 +609,11 @@ export interface ImportResult {
   /** Existing documents left alone (strategy "skip"). */
   skipped: number;
   errors: string[];
+  /**
+   * Account numbers given to the accounts this import created — the workbook
+   * never carries them. Absent when nothing new was created.
+   */
+  accountNumbers?: { first: string; last: string };
 }
 
 /**
@@ -463,6 +675,18 @@ export async function batchImportConcessionaires(
 
   let processed = skipped;
 
+  // Accounts new to this workbook need account numbers. Reserved in one go:
+  // the counter is shared, and taking it once per row would serialise the
+  // whole import behind it. Rows already in the system keep the number they
+  // were given when they were opened.
+  const newAccountCount = writable.filter(({ existingId }) => !existingId).length;
+  const reservedNumbers = await reserveAccountNumbers(newAccountCount);
+  let nextReserved = 0;
+  const assignedNumbers =
+    reservedNumbers.length > 0
+      ? { first: reservedNumbers[0], last: reservedNumbers[reservedNumbers.length - 1] }
+      : undefined;
+
   // Batches are chunked by OPERATION, not by row: each account costs one write
   // for the parent plus one per bill, so an account with years of history can
   // exceed Firestore's 500-op limit on its own.
@@ -479,7 +703,7 @@ export async function batchImportConcessionaires(
       processed += pendingRows.length;
       onProgress?.(processed, concessionaires.length);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = userMessage(err, "Couldn't save this batch.");
       errors.push(`Batch ${batchNumber}: ${msg}`);
     }
     batch = writeBatch(db);
@@ -526,7 +750,12 @@ export async function batchImportConcessionaires(
       opsInBatch += 1;
     });
 
-    const parentPayload = { ...parentFields, billingSummary: summary };
+    const parentPayload = {
+      ...parentFields,
+      billingSummary: summary,
+      approvalStatus: "APPROVED",
+      ...(existingId ? {} : { accountNumber: reservedNumbers[nextReserved++] }),
+    };
 
     if (existingId) {
       // Merge rather than replace: an existing account may carry payments,
@@ -558,7 +787,7 @@ export async function batchImportConcessionaires(
     actorEmail
   );
 
-  return { imported, updated, skipped, errors };
+  return { imported, updated, skipped, errors, accountNumbers: assignedNumbers };
 }
 
 // ── BATCH ASSIGN FOR READING ───────────────────────────────────────────────

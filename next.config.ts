@@ -18,6 +18,11 @@ const CSP = [
   "font-src 'self' data:",
   "connect-src 'self' https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://www.google-analytics.com https://*.google-analytics.com",
   "frame-src 'self' https://*.firebaseapp.com",
+  // The service worker that makes the console installable, and the manifest
+  // that describes it. Both fall back to default-src, but browsers differ in
+  // how they resolve that fallback for workers, so they are stated outright.
+  "worker-src 'self'",
+  "manifest-src 'self'",
   "object-src 'none'",
   "base-uri 'self'",
   "form-action 'self'",

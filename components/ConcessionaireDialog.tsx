@@ -1,5 +1,6 @@
 "use client";
 
+import { userMessage } from "@/lib/userMessage";
 import React, { useState, useTransition } from "react";
 import {
   Dialog,
@@ -59,7 +60,12 @@ export interface ConcessionaireDialogProps {
   open: boolean;
   onClose: () => void;
   selectedBarangay: string | null;
-  onSuccess: () => void;
+  /**
+   * "submitted" means a staff request that now waits for an admin. The
+   * barangay comes back too, so a list showing another one (or none at all)
+   * can follow the record that was just saved.
+   */
+  onSuccess: (outcome: "created" | "updated" | "submitted", barangay: string) => void;
   editData?: Concessionaire | null;
 }
 
@@ -70,7 +76,8 @@ export function ConcessionaireDialog({
   onSuccess,
   editData,
 }: ConcessionaireDialogProps) {
-  const { user } = useAuth();
+  const { user, role } = useAuth();
+  const isStaffRequest = role !== "admin";
   const isEditing = !!editData;
   const [form, setForm] = useState<Partial<Concessionaire>>(() => {
     if (editData) return { ...editData };
@@ -149,16 +156,17 @@ export function ConcessionaireDialog({
           );
         } else {
           const payload = { ...form, remarks: finalRemarks } as NewConcessionaireInput;
-          await addConcessionaire(payload, actorEmail);
+          await addConcessionaire(payload, actorEmail, role === "admin" ? "admin" : "staff");
           setForm(emptyForm());
           setNewRemark("");
         }
-        onSuccess();
+        onSuccess(
+          isEditing ? "updated" : isStaffRequest ? "submitted" : "created",
+          form.barangay ?? ""
+        );
         onClose();
       } catch (err) {
-        setSubmitError(
-          err instanceof Error ? err.message : `Failed to ${isEditing ? "update" : "save"} concessionaire.`
-        );
+        setSubmitError(userMessage(err, `Failed to ${isEditing ? "update" : "save"} concessionaire.`));
       }
     });
   }
@@ -178,7 +186,11 @@ export function ConcessionaireDialog({
                   {isEditing ? "Edit Concessionaire" : "New Concessionaire"}
                 </DialogTitle>
                 <DialogDescription className="text-xs font-medium text-slate-500 mt-0.5">
-                  {isEditing ? "Update details and status." : "Register a new concessionaire account."}
+                  {isEditing
+                    ? "Update details and status."
+                    : isStaffRequest
+                    ? "Request a new concessionaire account. An admin has to approve it before it can be read, billed, or take payments."
+                    : "Register a new concessionaire account."}
                 </DialogDescription>
               </div>
             </div>
@@ -290,6 +302,17 @@ export function ConcessionaireDialog({
                       ))}
                     </SelectContent>
                   </Select>
+                </div>
+                <div className="space-y-1.5 md:col-span-3 lg:col-span-1">
+                  <Label className="text-xs font-semibold text-slate-700">Account Number</Label>
+                  <div className="flex h-9 items-center rounded-md border border-slate-200 bg-slate-50 px-3">
+                    <span className="font-mono text-sm text-slate-600">
+                      {form.accountNumber || "Assigned when saved"}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-500">
+                    Given by the system and never changed, unlike the meter number.
+                  </p>
                 </div>
                 <div className="space-y-1.5 md:col-span-3 lg:col-span-1">
                   <Label htmlFor="c-meter" className="text-xs font-semibold text-slate-700">
@@ -491,7 +514,7 @@ export function ConcessionaireDialog({
               ) : (
                 <>
                   {isEditing ? <Pencil className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
-                  {isEditing ? "Save Changes" : "Add Concessionaire"}
+                  {isEditing ? "Save Changes" : isStaffRequest ? "Submit for Approval" : "Add Concessionaire"}
                 </>
               )}
             </Button>

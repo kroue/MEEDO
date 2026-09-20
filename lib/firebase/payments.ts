@@ -6,8 +6,8 @@
  * page. Distinct from addMeterPayment() in concessionaires.ts, which pays
  * down the one-time connection fee instead.
  *
- * Everything here runs inside a single Firestore transaction so the OR
- * number mint, the billingHistory ledger update, the balance change and the
+ * Everything here runs inside a single Firestore transaction so the receipt,
+ * the billingHistory ledger update, the balance change and the
  * delinquency-clock update can never end up inconsistent with each other.
  *
  * Two behaviours worth knowing about:
@@ -24,7 +24,7 @@
 
 import { doc, runTransaction, serverTimestamp, deleteField } from "firebase/firestore";
 import { db } from "./firebase";
-import { applyPaymentToHistory, reversePaymentInHistory } from "../billing";
+import { applyPaymentToHistory, isAccountApproved, reversePaymentInHistory } from "../billing";
 import {
   billDocRef,
   fetchBills,
@@ -34,11 +34,11 @@ import {
   paymentDocRef,
 } from "./bills";
 import { logAuditEvent } from "./auditLog";
+import { DuplicateOrNumberError, requireOrNumber } from "../receipts";
 import { getFullName } from "../utils";
 import type { BillingSummary, Concessionaire, PaymentRecord } from "./types";
 
 const CONCESSIONAIRES_COLLECTION = "concessionaires";
-const PAYMENT_COUNTER_DOC = "paymentOrCounter";
 
 export class InvalidPaymentAmountError extends Error {
   constructor(message: string) {
@@ -68,8 +68,17 @@ function toCentavos(value: number): number {
 
 /**
  * Records a payment of `amount` against `concessionaireId`'s outstanding
- * water bill balance, mints a sequential "PMT-YYYY-NNNNNN" receipt number,
- * and returns the resulting [PaymentRecord].
+ * water bill balance under the receipt number `rawOrNumber`, and returns the
+ * resulting [PaymentRecord].
+ *
+ * The OR is typed in, never generated: the office issues receipts from the
+ * booklet the treasury hands out against the Business Tax listing, so the
+ * number on the paper receipt is the number that must be stored. It doubles
+ * as the payment's id, so a number already used is refused
+ * ([DuplicateOrNumberError]) rather than overwriting the earlier receipt.
+ *
+ * `options.approvedBy` records the admin who released a staff member's
+ * payment from the approval queue; `actorEmail` stays whoever took the cash.
  *
  * Any amount beyond the outstanding balance is accepted and held as advance
  * credit on the account. Throws [InvalidPaymentAmountError] only if `amount`
@@ -78,15 +87,17 @@ function toCentavos(value: number): number {
 export async function recordPayment(
   concessionaireId: string,
   rawAmount: number,
-  actorEmail: string
+  rawOrNumber: string,
+  actorEmail: string,
+  options: { approvedBy?: string } = {}
 ): Promise<PaymentRecord> {
   const amount = toCentavos(rawAmount);
   if (!(amount > 0) || !Number.isFinite(amount)) {
     throw new InvalidPaymentAmountError("Payment amount must be greater than zero.");
   }
+  const orNumber = requireOrNumber(rawOrNumber);
 
   const docRef = doc(db, CONCESSIONAIRES_COLLECTION, concessionaireId);
-  const counterRef = doc(db, "settings", PAYMENT_COUNTER_DOC);
   const now = new Date();
 
   // Bills live in a sub-collection now, and a transaction can't run a query —
@@ -95,6 +106,11 @@ export async function recordPayment(
   // actually changes, which is a handful rather than the whole history.
   const owner = await fetchConcessionaireRaw(concessionaireId);
   if (!owner) throw new Error("Concessionaire not found.");
+  if (!isAccountApproved(owner)) {
+    throw new InvalidPaymentAmountError(
+      "This account is waiting for admin approval and can't take payments yet."
+    );
+  }
   const existingBills = await fetchBills(concessionaireId, owner.billingHistory);
 
   const { paymentRecord, concessionaireName, touchedBills } = await runTransaction(
@@ -105,7 +121,11 @@ export async function recordPayment(
       if (!snapshot.exists()) {
         throw new Error("Concessionaire not found.");
       }
-      const counterSnapshot = await transaction.get(counterRef);
+      // The OR is the payment's id, so an existing document means this
+      // receipt number has already been recorded against this account.
+      const receiptRef = paymentDocRef(concessionaireId, orNumber);
+      const receiptSnapshot = await transaction.get(receiptRef);
+      if (receiptSnapshot.exists()) throw new DuplicateOrNumberError(orNumber);
 
       const data = snapshot.data() as Concessionaire;
       const concessionaireName = getFullName(data);
@@ -129,14 +149,6 @@ export async function recordPayment(
         (b) => (paidBefore.get(b.month) ?? 0) !== (b.amountPaid ?? 0)
       );
 
-      const counterYear = counterSnapshot.exists() ? counterSnapshot.data().year : null;
-      const lastNumber = counterSnapshot.exists() ? counterSnapshot.data().lastNumber ?? 0 : 0;
-      const billingYear = now.getFullYear();
-      const nextNumber = counterYear === billingYear ? lastNumber + 1 : 1;
-      const orNumber = `PMT-${billingYear}-${String(nextNumber).padStart(6, "0")}`;
-
-      transaction.set(counterRef, { year: billingYear, lastNumber: nextNumber });
-
       const newBillingBalance = fullyPaid ? 0 : toCentavos(outstandingBalance - appliedToBalance);
       const newCreditBalance = toCentavos(existingCredit + creditedAmount);
       const newTotalBalance = toCentavos(newBillingBalance + waterMeterBalance);
@@ -150,14 +162,12 @@ export async function recordPayment(
         balanceAfter: newBillingBalance,
         appliedToBalance,
         creditedAmount,
+        ...(options.approvedBy ? { approvedBy: options.approvedBy } : {}),
       };
 
       const ownerFields = ownerFieldsOf(concessionaireId, data);
 
-      transaction.set(paymentDocRef(concessionaireId, orNumber), {
-        ...paymentRecord,
-        ...ownerFields,
-      });
+      transaction.set(receiptRef, { ...paymentRecord, ...ownerFields });
 
       touchedBills.forEach((b) => {
         transaction.set(

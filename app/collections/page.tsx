@@ -1,13 +1,22 @@
 "use client";
 
+import { printDocument } from "@/components/print/PrintHost";
+import { PaymentReceipt, WaterBillStatement } from "@/components/print/documents";
+import { userMessage } from "@/lib/userMessage";
 import { useEffect, useMemo, useState } from "react";
 import { useConcessionaires, useConcessionaire } from "@/lib/firebase/useConcessionaires";
-import { recordPayment, voidPayment, InvalidPaymentAmountError } from "@/lib/firebase/payments";
-import { subscribeToRecentPayments } from "@/lib/firebase/bills";
-import type { PaymentDocument } from "@/lib/firebase/types";
+import { recordPayment, voidPayment } from "@/lib/firebase/payments";
+import {
+  isOpenRequest,
+  subscribeToAccountRequests,
+  submitWaterPaymentRequest,
+} from "@/lib/firebase/requests";
+import { orNumberProblem } from "@/lib/receipts";
+import { subscribeToBills, subscribeToRecentPayments } from "@/lib/firebase/bills";
+import type { MonthlyBillingRecord, PaymentDocument, ServiceRequest } from "@/lib/firebase/types";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { getFullName, formatPeso } from "@/lib/utils";
-import { sortHistoryAsc, paymentStatus, PAYMENT_STATUS_STYLES } from "@/lib/billing";
+import { isAccountApproved, sortHistoryAsc, paymentStatus, PAYMENT_STATUS_STYLES } from "@/lib/billing";
 import type { Concessionaire, PaymentRecord } from "@/lib/firebase/types";
 import {
   Card,
@@ -58,8 +67,11 @@ interface PaymentFeedRow extends PaymentRecord {
 }
 
 export default function CollectionsPage() {
-  const { user } = useAuth();
+  const { user, role } = useAuth();
   const actorEmail = user?.email ?? "unknown";
+  // Staff take the cash and write the receipt; an admin releases the payment
+  // onto the account. Nothing a staff member records changes a balance here.
+  const canPostDirectly = role === "admin";
 
   const { concessionaires } = useConcessionaires("all", { realtime: true });
   const [search, setSearch] = useState("");
@@ -71,6 +83,13 @@ export default function CollectionsPage() {
   const [isPaying, setIsPaying] = useState(false);
   const [successOpen, setSuccessOpen] = useState(false);
   const [lastPayment, setLastPayment] = useState<PaymentRecord | null>(null);
+  // The OR is copied off the receipt that was just written — never generated.
+  const [paymentOr, setPaymentOr] = useState("");
+  const [requestNotice, setRequestNotice] = useState<string | null>(null);
+  const [accountRequests, setAccountRequests] = useState<{ id: string; rows: ServiceRequest[] }>({
+    id: "",
+    rows: [],
+  });
 
   // Void flow — a mistyped amount used to have no path back except a
   // developer editing Firestore by hand, which leaves no audit trail at all.
@@ -84,23 +103,62 @@ export default function CollectionsPage() {
     const q = search.trim().toLowerCase();
     return concessionaires.filter(
       (c) =>
-        getFullName(c).toLowerCase().includes(q) ||
-        c.meterNumber.toLowerCase().includes(q)
+        // A payment can't be taken on an account an admin hasn't approved.
+        isAccountApproved(c) &&
+        (getFullName(c).toLowerCase().includes(q) ||
+          (c.accountNumber ?? "").toLowerCase().includes(q))
     );
   }, [concessionaires, search]);
 
   const handleSelect = (c: Concessionaire) => {
     setSelectedId(c.id);
-    setPaymentAmount(c.billingBalance > 0 ? c.billingBalance.toFixed(2) : "");
+    setPaymentOr("");
+    setRequestNotice(null);
+    const balance = c.billingBalance ?? 0;
+    setPaymentAmount(balance > 0 ? balance.toFixed(2) : "");
     setPaymentError(null);
     setSearch("");
   };
 
+  // Bills live in the `bills` sub-collection now. Accounts imported or migrated
+  // since carry no `billingHistory` array at all, which is what made selecting
+  // one of them crash this page (`undefined.filter`). The subscription falls
+  // back to the legacy array for accounts the migration hasn't reached.
+  const [selectedBills, setSelectedBills] = useState<MonthlyBillingRecord[]>([]);
+  const legacySelectedBills = useMemo(() => selected?.billingHistory ?? [], [selected]);
+
+  useEffect(() => {
+    if (!selectedId) {
+      setSelectedBills([]);
+      return;
+    }
+    return subscribeToBills(selectedId, () => legacySelectedBills, setSelectedBills, (e) =>
+      console.warn("Couldn't load bills for the selected account", e)
+    );
+  }, [selectedId, legacySelectedBills]);
+
   // Oldest-first, matching the FIFO order a payment is applied in.
-  const unpaidHistory = useMemo(() => {
-    if (!selected) return [];
-    return sortHistoryAsc(selected.billingHistory.filter((h) => h.amountPaid < h.pesoAmount));
-  }, [selected]);
+  const unpaidHistory = useMemo(
+    () =>
+      sortHistoryAsc(
+        selectedBills.filter((h) => !h.voided && (h.amountPaid ?? 0) < h.pesoAmount)
+      ),
+    [selectedBills]
+  );
+
+  // Payments already sent for approval on this account, so the counter can
+  // see one is pending rather than recording it a second time.
+  useEffect(() => {
+    if (!selectedId) return;
+    return subscribeToAccountRequests(
+      selectedId,
+      (rows) => setAccountRequests({ id: selectedId, rows: rows.filter(isOpenRequest) }),
+      (e) => console.warn("Couldn't load pending requests for this account", e)
+    );
+  }, [selectedId]);
+
+  const pendingForAccount =
+    accountRequests.id === selectedId ? accountRequests.rows : [];
 
   const amountEntered = parseFloat(paymentAmount);
   const advanceAmount =
@@ -112,9 +170,15 @@ export default function CollectionsPage() {
     if (!selected) return;
     const amount = parseFloat(paymentAmount);
     setPaymentError(null);
+    setRequestNotice(null);
 
     if (!(amount > 0)) {
       setPaymentError("Enter a valid payment amount.");
+      return;
+    }
+    const orProblem = orNumberProblem(paymentOr);
+    if (orProblem) {
+      setPaymentError(orProblem);
       return;
     }
     // Overpayment is accepted — anything beyond the balance is held as
@@ -124,41 +188,24 @@ export default function CollectionsPage() {
 
     setIsPaying(true);
     try {
-      const payment = await recordPayment(selected.id, amount, actorEmail);
-      setLastPayment(payment);
-      setSuccessOpen(true);
+      if (canPostDirectly) {
+        const payment = await recordPayment(selected.id, amount, paymentOr, actorEmail);
+        setLastPayment(payment);
+        setSuccessOpen(true);
+      } else {
+        await submitWaterPaymentRequest(selected, { amount, orNumber: paymentOr }, actorEmail);
+        setRequestNotice(
+          `Sent to an admin for approval. The balance changes once it is approved — keep OR ${paymentOr.trim().toUpperCase()} with the receipt.`
+        );
+      }
       setPaymentAmount("");
+      setPaymentOr("");
     } catch (err) {
-      setPaymentError(
-        err instanceof InvalidPaymentAmountError || err instanceof Error
-          ? err.message
-          : "Failed to process payment."
-      );
+      setPaymentError(userMessage(err, "Failed to process payment."));
     } finally {
       setIsPaying(false);
     }
   }
-
-  // Prints a receipt route in a hidden iframe (rather than a new tab) — the
-  // target page calls window.print() itself once it loads. Same pattern
-  // already used for connection-fee receipts in app/connections/[id].
-  const handlePrintWithoutNewTab = (url: string) => {
-    const iframe = document.createElement("iframe");
-    iframe.style.position = "fixed";
-    iframe.style.right = "0";
-    iframe.style.bottom = "0";
-    iframe.style.width = "0px";
-    iframe.style.height = "0px";
-    iframe.style.border = "none";
-    iframe.src = url;
-    document.body.appendChild(iframe);
-
-    setTimeout(() => {
-      if (document.body.contains(iframe)) {
-        document.body.removeChild(iframe);
-      }
-    }, 60_000);
-  };
 
   async function handleVoidPayment() {
     if (!voidTarget) return;
@@ -169,7 +216,7 @@ export default function CollectionsPage() {
       setVoidTarget(null);
       setVoidReason("");
     } catch (err) {
-      setVoidError(err instanceof Error ? err.message : "Failed to void the payment.");
+      setVoidError(userMessage(err, "Failed to void the payment."));
     } finally {
       setIsVoiding(false);
     }
@@ -179,9 +226,22 @@ export default function CollectionsPage() {
   // collection-group listener rather than a scan of every concessionaire's
   // array — it returns fifteen documents instead of the whole district.
   const [feedPayments, setFeedPayments] = useState<PaymentDocument[] | null>(null);
+  const [feedError, setFeedError] = useState<string | null>(null);
 
   useEffect(() => {
-    const unsub = subscribeToRecentPayments(setFeedPayments, console.error, 15);
+    // Reported in the card rather than through console.error, which Next's
+    // dev overlay turns into a full-screen error for what is only a feed.
+    const unsub = subscribeToRecentPayments(
+      (rows) => {
+        setFeedPayments(rows);
+        setFeedError(null);
+      },
+      (e) => {
+        console.warn("Couldn't load recent payments", e);
+        setFeedError(userMessage(e, "Couldn't load recent payments."));
+      },
+      15
+    );
     return unsub;
   }, []);
 
@@ -221,14 +281,14 @@ export default function CollectionsPage() {
                 Account Lookup
               </CardTitle>
               <CardDescription className="text-xs text-slate-500">
-                Search by concessionaire name or meter number to begin processing a payment.
+                Search by concessionaire name or account number to begin processing a payment.
               </CardDescription>
             </CardHeader>
             <CardContent>
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                 <Input
-                  placeholder="Type a name or meter number..."
+                  placeholder="Type a name or account number..."
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   className="pl-9 text-sm"
@@ -245,7 +305,7 @@ export default function CollectionsPage() {
                       <div>
                         <p className="text-sm font-medium text-slate-800">{getFullName(c)}</p>
                         <p className="text-xs text-slate-400">
-                          {c.meterNumber} • {c.barangay}
+                          {c.accountNumber || "No account number"} • {c.barangay}
                         </p>
                       </div>
                       <Badge
@@ -277,7 +337,7 @@ export default function CollectionsPage() {
                       variant="outline"
                       size="sm"
                       className="h-7 text-xs font-semibold text-slate-600 border-slate-200 hover:bg-slate-50"
-                      onClick={() => handlePrintWithoutNewTab(`/billing/${selected.id}/print-soa`)}
+                      onClick={() => printDocument(<WaterBillStatement concessionaireId={selected.id} />)}
                     >
                       <FileText className="h-3.5 w-3.5 mr-1.5 text-sky-500" />
                       Print SOA
@@ -388,6 +448,26 @@ export default function CollectionsPage() {
                   </Alert>
                 )}
 
+                {requestNotice && (
+                  <div className="flex items-start gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3">
+                    <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+                    <p className="text-sm text-emerald-900">{requestNotice}</p>
+                  </div>
+                )}
+
+                {pendingForAccount.length > 0 && (
+                  <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+                    <p className="text-sm text-amber-900">
+                      {pendingForAccount.length === 1
+                        ? "1 request on this account is waiting for an admin"
+                        : `${pendingForAccount.length} requests on this account are waiting for an admin`}
+                      {pendingForAccount[0].orNumber ? ` (OR ${pendingForAccount[0].orNumber})` : ""}. The
+                      balance below does not include it yet.
+                    </p>
+                  </div>
+                )}
+
                 <div className="space-y-4">
                   <div className="space-y-1.5">
                     <Label className="text-xs font-medium text-slate-700">
@@ -410,21 +490,49 @@ export default function CollectionsPage() {
                     )}
                   </div>
 
+                  <div className="space-y-1.5">
+                    <Label htmlFor="payment-or" className="text-xs font-medium text-slate-700">
+                      OR Number *
+                    </Label>
+                    <Input
+                      id="payment-or"
+                      value={paymentOr}
+                      onChange={(e) => setPaymentOr(e.target.value)}
+                      placeholder="As written on the receipt"
+                      className="font-mono text-sm"
+                      autoComplete="off"
+                    />
+                    <p className="text-xs text-slate-500">
+                      Copy the number from the receipt booklet — it is not generated here.
+                    </p>
+                    {paymentOr.trim() && orNumberProblem(paymentOr) && (
+                      <p className="text-xs text-red-600">{orNumberProblem(paymentOr)}</p>
+                    )}
+                  </div>
+
                   <Button
                     onClick={handleProcessPayment}
-                    disabled={isPaying || !paymentAmount || parseFloat(paymentAmount) <= 0}
+                    disabled={
+                      isPaying ||
+                      !paymentAmount ||
+                      parseFloat(paymentAmount) <= 0 ||
+                      !paymentOr.trim() ||
+                      orNumberProblem(paymentOr) !== null
+                    }
                     className="w-full bg-emerald-600 hover:bg-emerald-700 text-white h-12 text-sm font-semibold"
                     size="lg"
                   >
                     {isPaying ? (
                       <>
                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        Processing...
+                        {canPostDirectly ? "Processing..." : "Sending..."}
                       </>
                     ) : (
                       <>
                         <Receipt className="mr-2 h-4 w-4" />
-                        Record Payment & Issue Receipt
+                        {canPostDirectly
+                          ? "Record Payment & Issue Receipt"
+                          : "Send Payment for Approval"}
                       </>
                     )}
                   </Button>
@@ -460,6 +568,11 @@ export default function CollectionsPage() {
               </CardDescription>
             </CardHeader>
             <CardContent>
+              {feedError && (
+                <p className="mb-3 text-xs text-amber-700">
+                  Couldn&apos;t load the latest payments: {feedError}
+                </p>
+              )}
               {recentPayments.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-10 text-center">
                   <Droplets className="h-8 w-8 text-slate-300 mb-2" />
@@ -517,15 +630,13 @@ export default function CollectionsPage() {
                             size="sm"
                             className="h-6 px-2 text-[11px] text-sky-600 hover:text-sky-700 hover:bg-sky-50"
                             onClick={() =>
-                              handlePrintWithoutNewTab(
-                                `/collections/${payment.concessionaireId}/print-receipt?or=${encodeURIComponent(payment.orNumber)}`
-                              )
+                              printDocument(<PaymentReceipt concessionaireId={payment.concessionaireId} orNumber={payment.orNumber} />)
                             }
                           >
                             <Printer className="h-3 w-3 mr-1" />
                             Print
                           </Button>
-                          {!payment.voided && (
+                          {!payment.voided && canPostDirectly && (
                             <Button
                               variant="ghost"
                               size="sm"
@@ -653,9 +764,7 @@ export default function CollectionsPage() {
               onClick={() =>
                 selected &&
                 lastPayment &&
-                handlePrintWithoutNewTab(
-                  `/collections/${selected.id}/print-receipt?or=${encodeURIComponent(lastPayment.orNumber)}`
-                )
+                printDocument(<PaymentReceipt concessionaireId={selected.id} orNumber={lastPayment.orNumber} />)
               }
             >
               <Printer className="mr-2 h-4 w-4" />

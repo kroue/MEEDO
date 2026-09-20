@@ -4,9 +4,13 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
+import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth/AuthContext";
+import { subscribeToApprovalQueue } from "@/lib/firebase/concessionaires";
+import { subscribeToServiceRequests } from "@/lib/firebase/requests";
 import {
   LayoutDashboard,
+  ClipboardCheck,
   CreditCard,
   BarChart3,
   ShieldCheck,
@@ -26,6 +30,7 @@ const navItems = [
   { href: "/billing", label: "Billing", icon: Receipt, adminOnly: false },
   { href: "/import", label: "Import XLSX", icon: FileUp, adminOnly: true },
   { href: "/collections", label: "Collection Module", icon: CreditCard, adminOnly: false },
+  { href: "/approvals", label: "Approvals", icon: ClipboardCheck, adminOnly: false },
   { href: "/reports", label: "Reports & Analytics", icon: BarChart3, adminOnly: true },
   { href: "/audit", label: "Audit Logs", icon: ShieldCheck, adminOnly: true },
   { href: "/team", label: "Team", icon: Users, adminOnly: true },
@@ -36,6 +41,31 @@ export function Sidebar() {
   const pathname = usePathname();
   const { role } = useAuth();
   const visibleNavItems = navItems.filter((item) => !item.adminOnly || role === "admin");
+
+  // What staff have sent an admin and nobody has decided yet: new accounts,
+  // and payments or service requests. Shown on the nav so none of it sits
+  // unnoticed — until someone approves, no money has moved.
+  const [pendingAccounts, setPendingAccounts] = useState(0);
+  const [pendingRequests, setPendingRequests] = useState(0);
+  const isAdmin = role === "admin";
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    return subscribeToApprovalQueue(
+      (accounts) => setPendingAccounts(accounts.filter((a) => a.approvalStatus === "PENDING").length),
+      () => setPendingAccounts(0)
+    );
+  }, [isAdmin]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    return subscribeToServiceRequests(
+      (requests) => setPendingRequests(requests.filter((r) => r.status === "PENDING").length),
+      () => setPendingRequests(0)
+    );
+  }, [isAdmin]);
+
+  const pendingApprovals = isAdmin ? pendingAccounts + pendingRequests : 0;
 
   return (
     <aside className="fixed inset-y-0 left-0 z-30 flex w-64 flex-col border-r border-slate-800 bg-slate-950">
@@ -85,7 +115,15 @@ export function Sidebar() {
                     : "text-slate-500 group-hover:text-slate-300"
                 )}
               />
-              {item.label}
+              <span className="flex-1">{item.label}</span>
+              {item.href === "/approvals" && pendingApprovals > 0 && (
+                <span
+                  className="rounded-full bg-amber-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-slate-950"
+                  title={`${pendingApprovals} item(s) awaiting approval`}
+                >
+                  {pendingApprovals}
+                </span>
+              )}
             </Link>
           );
         })}

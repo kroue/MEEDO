@@ -1,5 +1,6 @@
 "use client";
 
+import { userMessage } from "@/lib/userMessage";
 import { useCallback, useEffect, useState } from "react";
 import {
   backfillSubcollections,
@@ -7,6 +8,11 @@ import {
   surveyMigration,
   type MigrationProgress,
 } from "@/lib/firebase/migrateToSubcollections";
+import {
+  assignMissingAccountNumbers,
+  surveyAccountNumbers,
+  type AccountNumberSurvey,
+} from "@/lib/firebase/accountNumbers";
 import { useAuth } from "@/lib/auth/AuthContext";
 import {
   Card,
@@ -19,7 +25,7 @@ import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { AlertCircle, CheckCircle2, Database, Loader2, RefreshCw } from "lucide-react";
+import { AlertCircle, CheckCircle2, Database, Hash, Loader2, RefreshCw } from "lucide-react";
 
 type Survey = Awaited<ReturnType<typeof surveyMigration>>;
 
@@ -46,17 +52,42 @@ export default function MigratePage() {
   const [finished, setFinished] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Accounts opened before numbering existed have no account number.
+  const [accountNumbers, setAccountNumbers] = useState<AccountNumberSurvey | null>(null);
+  const [numbering, setNumbering] = useState(false);
+  const [numberingResult, setNumberingResult] = useState<string | null>(null);
+
   const refreshSurvey = useCallback(async () => {
     setSurveying(true);
     setError(null);
     try {
       setSurvey(await surveyMigration());
+      setAccountNumbers(await surveyAccountNumbers());
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Couldn't read the collection.");
+      setError(userMessage(e, "Couldn't check the current state."));
     } finally {
       setSurveying(false);
     }
   }, []);
+
+  async function assignAccountNumbers() {
+    setNumbering(true);
+    setNumberingResult(null);
+    setError(null);
+    try {
+      const { assigned, alreadyNumbered } = await assignMissingAccountNumbers(actorEmail);
+      setNumberingResult(
+        assigned === 0
+          ? `Every account already has a number (${alreadyNumbered}).`
+          : `Numbered ${assigned} account(s). ${alreadyNumbered} already had one.`
+      );
+      setAccountNumbers(await surveyAccountNumbers());
+    } catch (e) {
+      setError(userMessage(e, "Couldn't assign account numbers."));
+    } finally {
+      setNumbering(false);
+    }
+  }
 
   useEffect(() => {
     if (role === "admin") void refreshSurvey();
@@ -77,7 +108,7 @@ export default function MigratePage() {
       );
       await refreshSurvey();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "The migration stopped with an error.");
+      setError(userMessage(e, "The migration stopped with an error."));
     } finally {
       setRunning(null);
     }
@@ -102,10 +133,9 @@ export default function MigratePage() {
       <div>
         <h2 className="text-2xl font-bold tracking-tight text-slate-900">Storage Migration</h2>
         <p className="text-sm text-slate-500">
-          Moves billing history and payments out of arrays on each concessionaire and into
-          sub-collections. Firestore caps a document at 1&nbsp;MiB and rewrites the whole thing on
-          every write, so arrays that grow by a row a month were always going to become a problem —
-          this is that problem dealt with before it arrives.
+          Moves each account&apos;s billing history and payments out of one ever-growing list on the
+          account and into separate records. That list gets slower to save every month and would
+          eventually hit a size limit — this deals with it before it becomes a problem.
         </p>
       </div>
 
@@ -130,7 +160,7 @@ export default function MigratePage() {
           <div>
             <CardTitle className="text-base font-semibold text-slate-800">Current state</CardTitle>
             <CardDescription className="text-xs text-slate-500">
-              Read fresh from Firestore. Nothing here changes anything.
+              Checked just now. Viewing this page changes nothing.
             </CardDescription>
           </div>
           <Button variant="outline" size="sm" onClick={refreshSurvey} disabled={surveying}>
@@ -157,7 +187,7 @@ export default function MigratePage() {
               </div>
               <div>
                 <dt className="text-[10px] uppercase tracking-wider text-slate-400">
-                  Still holding arrays
+                  Old lists remaining
                 </dt>
                 <dd className="text-2xl font-bold text-amber-600">{survey.withLegacyArrays}</dd>
               </div>
@@ -208,10 +238,9 @@ export default function MigratePage() {
             )}
           </div>
           <CardDescription className="text-xs text-slate-500">
-            Writes each bill and payment as its own document and builds the summary the parent now
-            carries. The arrays stay exactly where they are, and every screen keeps reading them as a
-            fallback, so this cannot break anything that is currently working. Safe to run more than
-            once.
+            Copies each bill and payment into its own record and builds the account summary. The old
+            lists stay exactly where they are, and every screen keeps reading them as a fallback, so
+            this cannot break anything that is currently working. Safe to run more than once.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -227,7 +256,7 @@ export default function MigratePage() {
           <div className="flex items-center gap-2">
             <AlertCircle className="h-4 w-4 text-amber-500" />
             <CardTitle className="text-base font-semibold text-slate-800">
-              Step 2 — Remove the old arrays
+              Step 2 — Remove the old lists
             </CardTitle>
             {cleanupDone && (
               <Badge variant="secondary" className="bg-emerald-50 text-emerald-700 border-emerald-200">
@@ -237,7 +266,7 @@ export default function MigratePage() {
           </div>
           <CardDescription className="text-xs text-slate-500">
             The only step that deletes anything. Before clearing an account it checks that every
-            month and every receipt in the arrays exists as a document; if any is missing it leaves
+            month and every receipt in the old lists has been copied; if any is missing it leaves
             that account alone and tells you. Run step 1 first, then look at a few accounts in
             Billing and satisfy yourself the history is intact.
           </CardDescription>
@@ -250,7 +279,56 @@ export default function MigratePage() {
             disabled={running !== null || !survey || survey.withSummary === 0}
           >
             {running === "cleanup" && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-            Remove legacy arrays
+            Remove old lists
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <Hash className="h-4 w-4 text-slate-400" />
+            <CardTitle className="text-base font-semibold text-slate-800">Account numbers</CardTitle>
+            {accountNumbers?.missing === 0 && (
+              <Badge variant="secondary" className="bg-emerald-50 text-emerald-700 border-emerald-200">
+                Complete
+              </Badge>
+            )}
+          </div>
+          <CardDescription className="text-xs text-slate-500">
+            Every account opened from now on is given a number like 2026-000042, separate from the
+            meter number. Accounts that existed before have none until this runs, which gives them
+            one each, oldest first. Safe to run more than once.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {accountNumbers && (
+            <dl className="grid gap-4 sm:grid-cols-3">
+              <div>
+                <dt className="text-[10px] uppercase tracking-wider text-slate-400">Accounts</dt>
+                <dd className="text-2xl font-bold text-slate-900">{accountNumbers.total}</dd>
+              </div>
+              <div>
+                <dt className="text-[10px] uppercase tracking-wider text-slate-400">Numbered</dt>
+                <dd className="text-2xl font-bold text-emerald-600">{accountNumbers.numbered}</dd>
+              </div>
+              <div>
+                <dt className="text-[10px] uppercase tracking-wider text-slate-400">Without a number</dt>
+                <dd className="text-2xl font-bold text-amber-600">{accountNumbers.missing}</dd>
+              </div>
+            </dl>
+          )}
+
+          {numberingResult && (
+            <Alert>
+              <CheckCircle2 className="h-4 w-4" />
+              <AlertDescription>{numberingResult}</AlertDescription>
+            </Alert>
+          )}
+
+          <Button onClick={assignAccountNumbers} disabled={numbering || accountNumbers?.missing === 0}>
+            {numbering && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+            Assign the missing numbers
           </Button>
         </CardContent>
       </Card>

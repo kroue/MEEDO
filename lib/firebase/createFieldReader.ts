@@ -10,6 +10,7 @@
  * which one is active and why. The call sites don't care.
  */
 
+import { userMessage } from "../userMessage";
 import { initializeApp, deleteApp } from "firebase/app";
 import {
   getAuth,
@@ -79,14 +80,11 @@ export function describeCallableError(e: unknown): Error {
   // Named precisely rather than shown as a generic failure: the fix is a
   // deployment step, not anything the person clicking the button did wrong.
   if (code === "functions/not-found" || code === "functions/unavailable") {
-    return new Error(
-      "Account management isn't available — its Cloud Functions aren't deployed. " +
-        "Set NEXT_PUBLIC_ACCOUNT_ADMIN_BACKEND=client to use in-browser account creation instead."
-    );
+    return new Error("Account management isn't available right now. Contact your system administrator.");
   }
   if (code === "functions/invalid-argument" && message) return new Error(message);
   if (code === "functions/failed-precondition" && message) return new Error(message);
-  return new Error(message || "Something went wrong. Please try again.");
+  return new Error(userMessage(e));
 }
 
 /** Maps a Firebase Auth error from the client path onto our own error types. */
@@ -98,13 +96,9 @@ function describeAuthError(e: unknown): Error {
   }
   if (code === "auth/invalid-email") return new InvalidUsernameError();
   if (code === "auth/operation-not-allowed") {
-    return new Error(
-      "Firebase is refusing new sign-ups, so accounts can't be created from the browser. " +
-        "Either re-enable sign-up in the Firebase console, or deploy the account-management " +
-        "Cloud Functions and set NEXT_PUBLIC_ACCOUNT_ADMIN_BACKEND=functions."
-    );
+    return new Error("New accounts can't be created right now. Contact your system administrator.");
   }
-  return e instanceof Error ? e : new Error("Failed to create the account.");
+  return new Error(userMessage(e, "Failed to create the account."));
 }
 
 /**
@@ -148,11 +142,9 @@ async function createAccountViaClient(
     await setDoc(doc(db, "users", uid), roleDoc);
   } catch (e) {
     throw new Error(
-      `The sign-in account was created but its role could not be saved (${
-        e instanceof Error ? e.message : "unknown error"
-      }). The username is now taken and the account cannot sign in. ` +
-        `Ask a developer to remove Auth user ${uid}, or deploy the account-management ` +
-        `Cloud Functions, which roll this back automatically.`
+      `The account was created, but its access level couldn't be saved (${userMessage(e)}) ` +
+        `so it can't sign in, and the username is now taken. Contact your system administrator ` +
+        `and quote reference ${uid}.`
     );
   } finally {
     await signOut(secondaryAuth).catch(() => {});
@@ -263,8 +255,7 @@ export async function setAccountDisabled(uid: string, disabled: boolean): Promis
 export async function resetAccountPassword(uid: string, password: string): Promise<void> {
   if (!ACCOUNT_CAPABILITIES.canSetPasswordDirectly) {
     throw new UnsupportedOnThisBackendError(
-      "Setting a password directly needs the account-management Cloud Functions. " +
-        "For console accounts, send a reset email instead."
+      "Setting a password directly isn't available. For console accounts, send a reset email instead."
     );
   }
   if (password.length < MIN_PASSWORD_LENGTH) {
@@ -286,8 +277,7 @@ export async function sendPasswordResetLink(email: string): Promise<void> {
   if (email.endsWith(`@${MOBILE_USERNAME_DOMAIN}`)) {
     throw new UnsupportedOnThisBackendError(
       "Field readers sign in with a username, not a real email address, so a reset link has " +
-        "nowhere to go. Deploy the account-management Cloud Functions to set their password " +
-        "directly, or create the account again."
+        "nowhere to go. Create the account again with a new password instead."
     );
   }
   await sendPasswordResetEmail(auth, email);

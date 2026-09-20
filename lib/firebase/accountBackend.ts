@@ -71,5 +71,4 @@ export const ACCOUNT_CAPABILITIES = {
 
 /** Shown in the UI wherever a control is unavailable on the current backend. */
 export const ACCOUNT_FUNCTIONS_HINT =
-  "This needs the account-management Cloud Functions, which aren't deployed. " +
-  "They require the Firebase project to be on the Blaze plan; see functions/README.md.";
+  "This option isn't available on this system yet. Contact your system administrator.";

@@ -1,5 +1,6 @@
 "use client";
 
+import { userMessage } from "@/lib/userMessage";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useConcessionaires } from "@/lib/firebase/useConcessionaires";
 import { batchAssignConcessionairesForReading } from "@/lib/firebase/concessionaires";
@@ -16,7 +17,7 @@ import {
   MIN_PASSWORD_LENGTH,
 } from "@/lib/firebase/createFieldReader";
 import { ACCOUNT_CAPABILITIES } from "@/lib/firebase/accountBackend";
-import { currentMonthStr as billingMonthStr } from "@/lib/billing";
+import { currentMonthStr as billingMonthStr, isAccountApproved } from "@/lib/billing";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { BARANGAYS } from "@/lib/firebase/types";
 import {
@@ -150,7 +151,7 @@ export default function SyncPage() {
       resetCreateForm();
       setCreateOpen(false);
     } catch (err) {
-      setCreateError(err instanceof Error ? err.message : "Failed to create account.");
+      setCreateError(userMessage(err, "Failed to create account."));
     } finally {
       setCreating(false);
     }
@@ -187,7 +188,7 @@ export default function SyncPage() {
       );
       setEditingReader(null);
     } catch (err) {
-      setEditError(err instanceof Error ? err.message : "Failed to update details.");
+      setEditError(userMessage(err, "Failed to update details."));
     } finally {
       setEditSaving(false);
     }
@@ -216,13 +217,14 @@ export default function SyncPage() {
 
     if (concessionaires) {
       concessionaires.forEach((c) => {
-        if (c.status === "CONNECTED") {
+        // An account awaiting approval must never reach a reader's route.
+        if (c.status === "CONNECTED" && isAccountApproved(c)) {
           const stat = stats.find((s) => s.barangay === c.barangay);
           if (stat) {
             stat.totalConnected++;
-            const hasReading = c.billingHistory?.some(
-              (h) => h.month === currentMonthStr
-            );
+            const hasReading =
+              c.billingSummary?.latestBill?.month === currentMonthStr ||
+              (c.billingHistory ?? []).some((h) => h.month === currentMonthStr);
             if (!hasReading) {
               stat.missingReading++;
               if (c.assignedForReading === currentMonthStr) {
@@ -256,7 +258,7 @@ export default function SyncPage() {
     try {
       await setAccountDisabled(reader.uid, !reader.disabled);
     } catch (e) {
-      setActionError(e instanceof Error ? e.message : "Failed to update the account.");
+      setActionError(userMessage(e, "Failed to update the account."));
     } finally {
       setBusyReaderUid(null);
     }
@@ -283,7 +285,7 @@ export default function SyncPage() {
       setResetPassword("");
       setResetConfirm("");
     } catch (err) {
-      setResetError(err instanceof Error ? err.message : "Failed to reset the password.");
+      setResetError(userMessage(err, "Failed to reset the password."));
     } finally {
       setResetting(false);
     }
@@ -302,7 +304,7 @@ export default function SyncPage() {
     } catch (e) {
       console.error(e);
       setActionError(
-        e instanceof Error ? `Failed to assign Barangay: ${e.message}` : "Failed to assign Barangay."
+        `Failed to assign Barangay: ${userMessage(e)}`
       );
     } finally {
       setBusyReaderUid(null);
@@ -317,7 +319,7 @@ export default function SyncPage() {
     } catch (e) {
       console.error(e);
       setActionError(
-        e instanceof Error ? `Failed to recall Barangay: ${e.message}` : "Failed to recall Barangay."
+        `Failed to recall Barangay: ${userMessage(e)}`
       );
     } finally {
       setBusyReaderUid(null);
@@ -579,7 +581,7 @@ export default function SyncPage() {
         <Alert variant="destructive">
           <AlertCircle className="h-4 w-4" />
           <AlertTitle>Error</AlertTitle>
-          <AlertDescription>{error.message}</AlertDescription>
+          <AlertDescription>{userMessage(error)}</AlertDescription>
         </Alert>
       )}
 
