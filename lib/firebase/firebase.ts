@@ -25,14 +25,44 @@ export const firebaseConfig = {
   measurementId: process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID,
 };
 
-if (!firebaseConfig.apiKey || !firebaseConfig.projectId) {
-  throw new Error(
-    "Missing Firebase config — copy .env.local.example to .env.local and fill in your project's values."
-  );
+const MISSING_CONFIG =
+  "Missing backend config — set the NEXT_PUBLIC_FIREBASE_* environment variables " +
+  "(locally: copy .env.local.example to .env.local; when deploying: set them on the host, " +
+  "since they are baked in at build time).";
+
+const hasConfig = Boolean(firebaseConfig.apiKey && firebaseConfig.projectId);
+
+if (!hasConfig) {
+  // Loud in a browser, where it means the console genuinely cannot work and
+  // someone is staring at a broken screen.
+  //
+  // On the server it is only a warning. The build prerenders pages that never
+  // touch the backend — /_not-found among them — and every component here is
+  // client-side, so nothing calls the backend during a build. Throwing failed
+  // the whole build on the way past, which is how a deploy died on a host that
+  // simply hadn't been given the variables yet. A genuinely misconfigured
+  // deploy still fails plainly, because the values are inlined at build time
+  // and the browser hits this same check.
+  if (typeof window !== "undefined") throw new Error(MISSING_CONFIG);
+  console.warn(MISSING_CONFIG);
 }
 
+/**
+ * Stand-in used only when prerendering without config, so initializing the
+ * SDK doesn't throw `auth/invalid-api-key` and bring the build down with a
+ * message about API keys rather than about the missing variables.
+ */
+const configForInit = hasConfig
+  ? firebaseConfig
+  : {
+      apiKey: "missing-config",
+      authDomain: "missing-config.invalid",
+      projectId: "missing-config",
+      appId: "missing-config",
+    };
+
 // Initialize Firebase — singleton guard prevents re-initialization on hot reload
-const app = !getApps().length ? initializeApp(firebaseConfig) : getApps()[0];
+const app = !getApps().length ? initializeApp(configForInit) : getApps()[0];
 
 // Analytics: only load in browser (not during SSR/build)
 if (typeof window !== "undefined") {
