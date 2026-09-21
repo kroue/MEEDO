@@ -35,6 +35,13 @@ const CSP = [
 const forWorkers = process.env.BUILD_TARGET === "workers";
 
 const nextConfig: NextConfig = {
+  env: {
+    // Stamped into the bundle when the build runs, so the About page can say
+    // which build is in front of you. In development this is the dev server's
+    // start time, which is the honest answer there.
+    NEXT_PUBLIC_BUILD_TIME: new Date().toISOString(),
+  },
+
   webpack(config, { isServer }) {
     if (isServer && forWorkers) {
       // Resolve the browser build of every package in the server bundle.

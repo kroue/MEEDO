@@ -14,6 +14,7 @@ import { useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import {
   AlertCircle,
+  BadgeInfo,
   CheckCircle2,
   Info,
   ListOrdered,
@@ -283,6 +284,13 @@ export default function SettingsPage() {
               Console accounts and roles
             </Link>
           )}
+          <Link
+            href="/about"
+            className="flex items-center gap-2 text-sm font-medium text-sky-700 hover:underline"
+          >
+            <BadgeInfo className="h-4 w-4" />
+            About this console — developer, terms and data privacy
+          </Link>
         </CardContent>
       </Card>
     </div>

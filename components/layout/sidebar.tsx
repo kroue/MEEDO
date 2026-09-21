@@ -8,6 +8,7 @@ import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { subscribeToApprovalQueue } from "@/lib/firebase/concessionaires";
 import { subscribeToServiceRequests } from "@/lib/firebase/requests";
+import { APP_VERSION, COPYRIGHT_YEAR } from "@/lib/appInfo";
 import {
   LayoutDashboard,
   ClipboardCheck,
@@ -129,15 +130,21 @@ export function Sidebar() {
         })}
       </nav>
 
-      {/* Footer */}
-      <div className="border-t border-slate-800 px-5 py-4 bg-slate-950/50">
+      {/* Footer — also the way to About, where the copyright and version it
+          shows are explained in full. */}
+      <Link
+        href="/about"
+        className="border-t border-slate-800 px-5 py-4 bg-slate-950/50 transition-colors hover:bg-slate-900"
+      >
         <div className="flex items-center justify-between">
           <p className="text-[10px] font-medium text-slate-500">
-            © 2026 MEEDO
+            © {COPYRIGHT_YEAR} MEEDO
           </p>
-          <p className="text-[9px] font-medium text-sky-400 border border-sky-500/30 px-1.5 py-0.5 rounded bg-sky-500/10">v2.4.1</p>
+          <p className="text-[9px] font-medium text-sky-400 border border-sky-500/30 px-1.5 py-0.5 rounded bg-sky-500/10">
+            v{APP_VERSION}
+          </p>
         </div>
-      </div>
+      </Link>
     </aside>
   );
 }
