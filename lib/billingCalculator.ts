@@ -25,6 +25,8 @@
  * why it is neither the newest bill's date nor the oldest unpaid row's.
  */
 
+import { dueDateFor } from "./dueDates";
+
 export interface WaterRateConfig {
   /** Cubic metres covered by the minimum charge. */
   minChargeThreshold: number;
@@ -189,6 +191,11 @@ export interface CalculateBillInput {
   creditBalance?: number;
   /** True if the ₱10 fee was already charged within this unpaid streak. */
   extensionFeeAlreadyCharged?: boolean;
+  /**
+   * The account's barangay, which fixes the day its bills fall due — see
+   * lib/dueDates.ts. Without one, the bill is due fifteen days after billing.
+   */
+  barangay?: string | null;
   /** Overridable for testing. */
   now?: number;
   config?: WaterRateConfig;
@@ -203,6 +210,7 @@ export function calculateBill(input: CalculateBillInput): BillingResult {
     delinquentSinceMillis = null,
     creditBalance = 0,
     extensionFeeAlreadyCharged = false,
+    barangay = null,
     now = Date.now(),
     config = DEFAULT_RATE_CONFIG,
   } = input;
@@ -236,7 +244,7 @@ export function calculateBill(input: CalculateBillInput): BillingResult {
   const creditRemaining = toCentavos(Math.max(0, creditBalance) - creditApplied);
   const totalAmountDue = toCentavos(grossDue - creditApplied);
 
-  const dueDateMillis = now + config.gracePeriodDays * MS_PER_DAY;
+  const dueDateMillis = dueDateFor(barangay, now, config.gracePeriodDays);
   const extensionFeeUsedForThisDebt = extensionFeeAlreadyCharged || extensionFee > 0;
   const projectedSurcharge = toCentavos(totalAmountDue * config.overdueSurchargeRate);
   const projectedExtensionFee = extensionFeeUsedForThisDebt ? 0 : config.extensionFee;

@@ -139,6 +139,7 @@ export async function previewBill(
     extensionFeeAlreadyCharged: window.some(
       (b) => b.month !== monthStr && b.extensionFeeCharged === true
     ),
+    barangay: c.barangay,
     now,
   });
 
@@ -207,6 +208,7 @@ export async function issueBill(input: IssueBillInput): Promise<IssueBillResult>
       extensionFeeAlreadyCharged: summaryWindow.some(
         (b) => b.month !== monthStr && b.extensionFeeCharged === true
       ),
+      barangay: data.barangay,
       now: now.getTime(),
     });
 

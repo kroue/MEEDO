@@ -9,6 +9,7 @@ import Link from "next/link";
 import { useConcessionaire } from "@/lib/firebase/useConcessionaires";
 import { subscribeToBills, subscribeToPayments } from "@/lib/firebase/bills";
 import { issueBill, voidBill, previewBill } from "@/lib/firebase/issueBill";
+import { formatDueDate } from "@/lib/dueDates";
 import { useAuth } from "@/lib/auth/AuthContext";
 import type { BillingResult } from "@/lib/billingCalculator";
 import type { MonthlyBillingRecord, PaymentRecord } from "@/lib/firebase/types";
@@ -743,6 +744,12 @@ export default function ConcessionaireBillingPage() {
                 <span className="font-semibold text-slate-700">Total due</span>
                 <span className="text-lg font-bold text-slate-900">
                   {formatPeso(issuePreview.totalAmountDue)}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Pay on or before</span>
+                <span className="font-medium text-slate-800">
+                  {formatDueDate(issuePreview.dueDateMillis)}
                 </span>
               </div>
             </div>

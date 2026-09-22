@@ -153,6 +153,16 @@ describe("what the receipt projects", () => {
     expect(r.dueDateMillis).toBe(NOW + 15 * DAY);
   });
 
+  it("falls due on the barangay's day when it has one", () => {
+    // NOW is 4 September 2025, 23:33 in the Philippines — before Bo-ot's 17th.
+    const r = bill({ barangay: "BO-OT" });
+    expect(r.dueDateMillis).toBe(Date.UTC(2025, 8, 17, 15, 59, 59, 999));
+  });
+
+  it("keeps fifteen days for a barangay without a set day", () => {
+    expect(bill({ barangay: "SALVACION" }).dueDateMillis).toBe(NOW + 15 * DAY);
+  });
+
   it("does not project the extension fee twice", () => {
     const r = bill({ overdueBalance: 500, delinquentSinceMillis: NOW - 16 * DAY });
     expect(r.projectedOverdueTotal).toBeCloseTo(625 * 1.03, 2);

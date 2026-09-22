@@ -36,6 +36,7 @@ import {
   RECONNECTION_FEE,
 } from "@/lib/billing";
 import { formatPeso } from "@/lib/utils";
+import { DEFAULT_DUE_AFTER_DAYS, dueDayFor } from "@/lib/dueDates";
 import {
   Card,
   CardContent,
@@ -51,6 +52,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+
+/** 17 → "17th", 21 → "21st", 23 → "23rd". */
+function ordinal(n: number): string {
+  const teen = n % 100 >= 11 && n % 100 <= 13;
+  const suffix = teen ? "th" : ({ 1: "st", 2: "nd", 3: "rd" } as Record<number, string>)[n % 10] ?? "th";
+  return `${n}${suffix}`;
+}
 
 function SettingRow({
   icon: Icon,
@@ -257,6 +265,29 @@ export default function SettingsPage() {
               </div>
             ))}
           </dl>
+
+          <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+              Due dates
+            </p>
+            <ul className="mt-1.5 grid gap-x-8 gap-y-1 sm:grid-cols-2">
+              {BARANGAYS.map((b) => {
+                const day = dueDayFor(b);
+                return (
+                  <li key={b} className="flex justify-between gap-4 text-sm">
+                    <span className="text-slate-600">{b === "CG" ? "Cebuano Group" : b}</span>
+                    <span className="font-medium text-slate-800">
+                      {day ? `Every ${ordinal(day)}` : `${DEFAULT_DUE_AFTER_DAYS} days after billing`}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+            <p className="mt-2 text-xs text-slate-500">
+              A bill issued after this month&apos;s date is due on next month&apos;s. The surcharge
+              still follows the {GRACE_PERIOD_DAYS}-day grace period above.
+            </p>
+          </div>
         </CardContent>
       </Card>
 

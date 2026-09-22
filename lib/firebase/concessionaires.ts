@@ -132,10 +132,32 @@ export class DuplicateMeterNumberError extends Error {
 }
 
 /**
+ * Where the live account list (concessionairesStore.ts) offers its copy for
+ * duplicate checks, or returns null when it has none the server has confirmed.
+ * Registered from that side rather than imported here: it already imports this
+ * module, and the other direction would make a cycle.
+ */
+let confirmedAccounts: (() => Concessionaire[] | null) | null = null;
+
+export function provideConfirmedAccounts(source: () => Concessionaire[] | null): void {
+  confirmedAccounts = source;
+}
+
+/**
  * True if `meterNumber` already belongs to a concessionaire other than
  * `exceptId`. Meter number is the key the XLSX importer joins billing history
  * and connection payments on, and what Collections searches by — a duplicate
  * silently attaches one concessionaire's history to another.
+ *
+ * Stored values aren't normalized, so the comparison is on meterKeyOf rather
+ * than an equality query that would miss a difference in case or spacing.
+ *
+ * It used to download every account to compare against, on every save. When
+ * the console already holds the live, server-confirmed list it checks that
+ * instead, plus one small exact-match query as a backstop for any account the
+ * list leaves out (it is ordered by first name, which skips a record with no
+ * first-name field at all). Without a confirmed list — offline, or in the
+ * first moment after loading — it reads everything, as before.
  */
 export async function isMeterNumberTaken(
   meterNumber: string,
@@ -143,17 +165,28 @@ export async function isMeterNumberTaken(
 ): Promise<boolean> {
   const key = meterKeyOf(meterNumber);
   if (!key) return false;
-  // Stored values aren't normalized, so compare on a small candidate set
-  // rather than an equality query that would miss a case difference.
+
+  const belongsToAnother = (id: string, data: { approvalStatus?: string; meterNumber?: string }) =>
+    id !== exceptId &&
+    // A rejected request never became an account, so it mustn't block the
+    // corrected one that follows it.
+    data.approvalStatus !== "REJECTED" &&
+    meterKeyOf(data.meterNumber) === key;
+
+  const live = confirmedAccounts?.() ?? null;
+  if (live) {
+    if (live.some((c) => belongsToAnother(c.id, c))) return true;
+    const spellings = [...new Set([meterNumber, meterNumber.trim(), key, key.toLowerCase()])].filter(
+      Boolean
+    );
+    const exact = await getDocs(
+      query(concessionairesRef(), where("meterNumber", "in", spellings))
+    );
+    return exact.docs.some((d) => belongsToAnother(d.id, d.data()));
+  }
+
   const snapshot = await getDocs(concessionairesRef());
-  return snapshot.docs.some(
-    (d) =>
-      d.id !== exceptId &&
-      // A rejected request never became an account, so it mustn't block the
-      // corrected one that follows it.
-      d.data().approvalStatus !== "REJECTED" &&
-      meterKeyOf(d.data().meterNumber as string | undefined) === key
-  );
+  return snapshot.docs.some((d) => belongsToAnother(d.id, d.data()));
 }
 
 /**

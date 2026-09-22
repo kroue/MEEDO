@@ -26,7 +26,7 @@
 import { onAuthStateChanged } from "firebase/auth";
 import type { Unsubscribe } from "firebase/firestore";
 import { auth } from "./firebase";
-import { subscribeToConcessionairesByBarangay } from "./concessionaires";
+import { provideConfirmedAccounts, subscribeToConcessionairesByBarangay } from "./concessionaires";
 import type { Concessionaire } from "./types";
 
 export interface ConcessionairesState {
@@ -116,6 +116,13 @@ export function subscribeToAccounts(watcher: () => void): () => void {
     }
   };
 }
+
+// Lets a save check for a duplicate meter number against the list already in
+// memory instead of downloading every account — but only a list the server has
+// confirmed, and only while it is live.
+provideConfirmedAccounts(() =>
+  stopListening && state.fromServer && !state.error ? state.concessionaires : null
+);
 
 export function getAccountsSnapshot(): ConcessionairesState {
   return state;

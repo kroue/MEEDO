@@ -15,6 +15,7 @@ import { useConcessionaire } from "@/lib/firebase/useConcessionaires";
 import { fetchBills, paymentDocRef } from "@/lib/firebase/bills";
 import type { Concessionaire, MonthlyBillingRecord, PaymentRecord } from "@/lib/firebase/types";
 import { daysOverdue, monthSortKey, paymentStatus, PAYMENT_STATUS_STYLES } from "@/lib/billing";
+import { daysPastDue, formatDueDate } from "@/lib/dueDates";
 import { formatPeso, getFullName } from "@/lib/utils";
 import { usePrintReadiness } from "@/components/print/PrintHost";
 
@@ -282,6 +283,7 @@ export function WaterBillStatement({ concessionaireId }: { concessionaireId: str
             <thead>
               <tr className="border-b border-slate-300 text-slate-600">
                 <th className="py-2 text-left font-semibold">Month</th>
+                <th className="py-2 text-left font-semibold">Due</th>
                 <th className="py-2 text-right font-semibold">Amount Due</th>
                 <th className="py-2 text-right font-semibold">Amount Paid</th>
                 <th className="py-2 text-right font-semibold">Balance</th>
@@ -293,10 +295,20 @@ export function WaterBillStatement({ concessionaireId }: { concessionaireId: str
               {bills.map((b, i) => {
                 const status = paymentStatus(b.pesoAmount, b.amountPaid);
                 const balance = b.pesoAmount - b.amountPaid;
-                const overdue = status !== "PAID" ? daysOverdue(b.billingDate) : null;
+                // Days past the bill's own due date. A bill imported without
+                // one falls back to days since it was issued, as before.
+                const overdue =
+                  status === "PAID"
+                    ? null
+                    : b.dueDateMillis
+                      ? daysPastDue(b.dueDateMillis)
+                      : daysOverdue(b.billingDate);
                 return (
                   <tr key={`${b.month}-${i}`} className="border-b border-slate-100">
                     <td className="py-2">{b.month}</td>
+                    <td className="py-2 text-xs text-slate-600">
+                      {b.dueDateMillis ? formatDueDate(b.dueDateMillis, { short: true }) : "—"}
+                    </td>
                     <td className="py-2 text-right font-medium">{formatPeso(b.pesoAmount)}</td>
                     <td className="py-2 text-right">{formatPeso(b.amountPaid)}</td>
                     <td className="py-2 text-right font-medium">{balance > 0 ? formatPeso(balance) : "—"}</td>
