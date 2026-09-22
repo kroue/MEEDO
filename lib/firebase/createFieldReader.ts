@@ -19,8 +19,7 @@ import {
   signOut,
 } from "firebase/auth";
 import { doc, setDoc, deleteDoc } from "firebase/firestore";
-import { httpsCallable } from "firebase/functions";
-import { db, auth, functions, firebaseConfig } from "./firebase";
+import { db, auth, callFunction, firebaseConfig } from "./firebase";
 import { logAuditEvent } from "./auditLog";
 import { ACCOUNT_CAPABILITIES, USING_ACCOUNT_FUNCTIONS } from "./accountBackend";
 
@@ -173,7 +172,7 @@ export async function createFieldReaderAccount(
 
   if (USING_ACCOUNT_FUNCTIONS) {
     try {
-      await httpsCallable(functions, "createFieldReader")({
+      await callFunction("createFieldReader", {
         username,
         password,
         firstName: firstName.trim(),
@@ -237,7 +236,7 @@ export async function createConsoleAccountRecord(
 export async function setAccountDisabled(uid: string, disabled: boolean): Promise<void> {
   if (USING_ACCOUNT_FUNCTIONS) {
     try {
-      await httpsCallable(functions, "setAccountDisabled")({ uid, disabled });
+      await callFunction("setAccountDisabled", { uid, disabled });
     } catch (e) {
       throw describeCallableError(e);
     }
@@ -262,7 +261,7 @@ export async function resetAccountPassword(uid: string, password: string): Promi
     throw new Error(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
   }
   try {
-    await httpsCallable(functions, "resetAccountPassword")({ uid, password });
+    await callFunction("resetAccountPassword", { uid, password });
   } catch (e) {
     throw describeCallableError(e);
   }

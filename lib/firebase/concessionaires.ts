@@ -99,10 +99,14 @@ export async function fetchConcessionairesByBarangay(
 /**
  * Real-time listener: fires callback whenever concessionaires in the
  * given barangay change. Returns an unsubscribe function.
+ *
+ * `fromServer` is false while the data is only what this browser had cached —
+ * the first answer on a fresh load, or everything while offline — and true
+ * once the server has confirmed it.
  */
 export function subscribeToConcessionairesByBarangay(
   barangay: string,
-  onData: (concessionaires: Concessionaire[]) => void,
+  onData: (concessionaires: Concessionaire[], fromServer: boolean) => void,
   onError: (error: Error) => void
 ): Unsubscribe {
   const q = barangay === "all"
@@ -110,7 +114,10 @@ export function subscribeToConcessionairesByBarangay(
     : query(concessionairesRef(), where("barangay", "==", barangay), orderBy("firstName", "asc"));
   return onSnapshot(
     q,
-    (snapshot) => onData(mapSnapshot(snapshot)),
+    // Metadata changes included so the switch from cached to confirmed is
+    // delivered even when the server's answer matches the cache exactly.
+    { includeMetadataChanges: true },
+    (snapshot) => onData(mapSnapshot(snapshot), !snapshot.metadata.fromCache),
     (err) => onError(err)
   );
 }

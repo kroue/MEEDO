@@ -73,7 +73,7 @@ export default function CollectionsPage() {
   // onto the account. Nothing a staff member records changes a balance here.
   const canPostDirectly = role === "admin";
 
-  const { concessionaires } = useConcessionaires("all", { realtime: true });
+  const { concessionaires } = useConcessionaires("all");
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const { concessionaire: selected } = useConcessionaire(selectedId, { realtime: true });

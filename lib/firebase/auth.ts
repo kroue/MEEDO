@@ -24,7 +24,7 @@ import {
   type User,
   type Unsubscribe,
 } from "firebase/auth";
-import { auth } from "./firebase";
+import { auth, clearLocalRecords } from "./firebase";
 import { fetchUserRole } from "./users";
 import { logAuditEvent } from "./auditLog";
 
@@ -55,8 +55,13 @@ export async function login(email: string, password: string): Promise<"admin" | 
   return role;
 }
 
+/**
+ * Signs out and clears the records this browser cached during the session.
+ * Follow it with a full page load — see clearLocalRecords.
+ */
 export async function logout(): Promise<void> {
   await firebaseSignOut(auth);
+  await clearLocalRecords();
 }
 
 /** Best-effort display name for the session — falls back to the email local-part. */

@@ -120,7 +120,7 @@ const PDF_OPTIONS: {
 ];
 
 export default function ReportsPage() {
-  const { concessionaires: allConcessionaires, loading } = useConcessionaires("all", { realtime: true });
+  const { concessionaires: allConcessionaires, loading } = useConcessionaires("all");
 
   // The open tab is mirrored in the URL hash (/reports#delinquency), so a link
   // — the disconnection notice in the header — can land on the right one.

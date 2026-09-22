@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo } from "react";
+import { useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { useConcessionaires } from "@/lib/firebase/useConcessionaires";
 import { currentMonthStr, isConcessionaireDisconnectionEligible, isPendingSync } from "@/lib/billing";
@@ -37,24 +37,14 @@ function initialsFor(name: string): string {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
-/** How often the nav badges re-read the collection. */
-const BADGE_REFRESH_MS = 2 * 60 * 1000;
-
 export function TopNavbar() {
   const { user, role } = useAuth();
   const router = useRouter();
-  // Deliberately NOT a realtime listener. This component is mounted on every
-  // page, so a live subscription here meant most screens held two listeners
-  // over the entire collection — each document carrying its full billingHistory
-  // and payments arrays, re-delivered to both on every write anywhere. These
-  // two badges are ambient counts, not something anyone watches tick, so a
-  // periodic re-read is plenty and costs a fraction of the document reads.
-  const { concessionaires, refresh } = useConcessionaires("all");
-
-  useEffect(() => {
-    const id = setInterval(refresh, BADGE_REFRESH_MS);
-    return () => clearInterval(id);
-  }, [refresh]);
+  // The same shared, live list every page reads (concessionairesStore.ts), so
+  // these badges cost nothing on top of the page and are never out of date.
+  // It used to be a separate full download on every load, re-run every two
+  // minutes, to avoid holding a second live listener next to the page's own.
+  const { concessionaires } = useConcessionaires("all");
 
   const name = user ? displayNameFor(user) : "";
   const email = user?.email ?? "";
@@ -73,7 +63,10 @@ export function TopNavbar() {
 
   async function handleLogOut() {
     await logout();
-    router.replace("/login");
+    // A full page load, not router.replace: signing out shuts down the
+    // database client (see clearLocalRecords), and nothing from this session
+    // should stay in memory for whoever uses the PC next.
+    window.location.replace("/login");
   }
 
   return (

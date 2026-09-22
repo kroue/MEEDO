@@ -9,8 +9,7 @@
  * accountBackend.ts.
  */
 
-import { httpsCallable } from "firebase/functions";
-import { functions } from "./firebase";
+import { callFunction } from "./firebase";
 import { logAuditEvent } from "./auditLog";
 import { USING_ACCOUNT_FUNCTIONS } from "./accountBackend";
 import {
@@ -49,7 +48,7 @@ export async function createConsoleUserAccount(
 
   if (USING_ACCOUNT_FUNCTIONS) {
     try {
-      await httpsCallable(functions, "createConsoleUser")({
+      await callFunction("createConsoleUser", {
         email: normalizedEmail,
         password,
         firstName: firstName.trim(),

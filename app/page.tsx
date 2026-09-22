@@ -63,7 +63,7 @@ const accentStyles = {
 } as const;
 
 export default function DashboardPage() {
-  const { concessionaires: allConcessionaires, loading } = useConcessionaires("all", { realtime: true });
+  const { concessionaires: allConcessionaires, loading } = useConcessionaires("all");
 
   // Accounts awaiting (or refused) admin approval aren't customers yet.
   const concessionaires = useMemo(

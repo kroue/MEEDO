@@ -83,7 +83,7 @@ interface BillRow {
 
 export default function BillingPage() {
   const router = useRouter();
-  const { concessionaires, loading, error } = useConcessionaires("all", { realtime: true });
+  const { concessionaires, loading, error } = useConcessionaires("all");
   const [search, setSearch] = useState("");
   const [barangayFilter, setBarangayFilter] = useState("all");
   const [monthFilter, setMonthFilter] = useState("all");
