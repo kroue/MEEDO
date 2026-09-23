@@ -17,7 +17,7 @@ const STANDALONE_ROUTES = ["/install"];
 // Routes only the "admin" role can reach — everything else (concessionaire
 // lookup, connections, billing, collections) is available to "staff" too.
 // See sidebar.tsx for the matching nav-item filter.
-const ADMIN_ONLY_ROUTES = ["/", "/sync", "/import", "/reports", "/audit", "/team", "/migrate"];
+const ADMIN_ONLY_ROUTES = ["/", "/sync", "/import", "/reports", "/audit", "/team"];
 
 function isAdminOnlyRoute(pathname: string): boolean {
   if (pathname === "/") return true;

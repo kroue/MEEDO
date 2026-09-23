@@ -31,7 +31,6 @@ import {
   Users,
   AlertTriangle,
   Droplets,
-  ArrowUpRight,
   RefreshCw,
 } from "lucide-react";
 import {
@@ -286,13 +285,6 @@ export default function DashboardPage() {
                     Water consumption (m³) and revenue billed (₱) — real billing history, last 12 months
                   </CardDescription>
                 </div>
-                <Badge
-                  variant="secondary"
-                  className="bg-sky-50 text-sky-700 border-sky-100 text-[10px] font-medium hover:bg-sky-100"
-                >
-                  <ArrowUpRight className="mr-1 h-3 w-3 text-sky-600" />
-                  Real Data
-                </Badge>
               </div>
             </CardHeader>
             <CardContent>

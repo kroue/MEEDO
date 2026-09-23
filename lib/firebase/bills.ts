@@ -27,12 +27,13 @@
  * mobile app needs, so a route download stays one query instead of one query
  * per consumer.
  *
- * ### Migrating
+ * ### Older accounts
  *
  * Accounts written before the move still hold `billingHistory` and `payments`
  * arrays. Everything here reads both shapes, preferring the sub-collection, so
- * the two can coexist while /migrate backfills. Nothing writes the arrays any
- * more.
+ * the two coexist indefinitely. Nothing writes the arrays any more, and there
+ * is no backfill tool: the office asked for it to go, and the fallbacks below
+ * are what keep those accounts working without one.
  */
 
 import {

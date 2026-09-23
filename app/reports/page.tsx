@@ -448,7 +448,7 @@ export default function ReportsPage() {
         <DropdownMenu>
           <DropdownMenuTrigger
             disabled={downloading}
-            className="inline-flex h-9 shrink-0 items-center gap-2 self-start rounded-md bg-sky-600 px-3.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-sky-700 outline-none focus-visible:ring-2 focus-visible:ring-sky-500 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-70"
+            className="inline-flex h-9 shrink-0 items-center gap-2 rounded-md bg-sky-600 px-3.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-sky-700 outline-none focus-visible:ring-2 focus-visible:ring-sky-500 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-70"
           >
             {downloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
             {downloading ? "Preparing PDF…" : "Download PDF"}

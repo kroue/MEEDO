@@ -35,7 +35,6 @@ const navItems = [
   { href: "/reports", label: "Reports & Analytics", icon: BarChart3, adminOnly: true },
   { href: "/audit", label: "Audit Logs", icon: ShieldCheck, adminOnly: true },
   { href: "/team", label: "Team", icon: Users, adminOnly: true },
-  { href: "/migrate", label: "Storage Migration", icon: Database, adminOnly: true },
 ];
 
 export function Sidebar() {

@@ -31,7 +31,10 @@ export function DateRangeFilter({
   const showsWorkedOutDates = preset !== "all" && range.label !== presetLabel(preset);
 
   return (
-    <div className={className}>
+    // Relative, because the worked-out dates below hang out of the flow: in it
+    // they would make this block taller than the box beside it and drag
+    // whatever is aligned with it out of line.
+    <div className={`relative ${className ?? ""}`}>
       <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-500">
         {label}
       </label>
@@ -71,7 +74,9 @@ export function DateRangeFilter({
           </div>
         )}
       </div>
-      {showsWorkedOutDates && <p className="mt-1 text-[11px] text-slate-500">{range.label}</p>}
+      {showsWorkedOutDates && (
+        <p className="absolute left-0 top-full mt-1 text-[11px] text-slate-500">{range.label}</p>
+      )}
     </div>
   );
 }
