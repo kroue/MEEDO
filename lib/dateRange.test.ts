@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  customRange,
   isoWithinRange,
   monthWithinRange,
   parseBillingMonth,
@@ -113,6 +114,48 @@ describe("monthWithinRange", () => {
     expect(monthWithinRange("SEP 2026", rangeFor("all"))).toBe(true);
     expect(monthWithinRange("", september)).toBe(false);
     expect(monthWithinRange("LAST MONTH", september)).toBe(false);
+  });
+});
+
+describe("customRange", () => {
+  it("covers both chosen days, end to end", () => {
+    const range = customRange("2026-09-05", "2026-09-17");
+    expect(range.start).toBe(ph(2026, 9, 5, 0));
+    expect(range.end).toBe(ph(2026, 9, 18, 0)); // the 17th, all of it
+    expect(range.label).toBe("5 Sep 2026 – 17 Sep 2026");
+    expect(withinRange(ph(2026, 9, 17, 23), range)).toBe(true);
+    expect(withinRange(ph(2026, 9, 18, 0), range)).toBe(false);
+  });
+
+  it("does not mind the dates arriving the wrong way round", () => {
+    expect(customRange("2026-09-17", "2026-09-05")).toMatchObject(
+      customRange("2026-09-05", "2026-09-17")
+    );
+  });
+
+  it("leaves the other end open when only one date is picked", () => {
+    expect(customRange("2026-09-05", "")).toMatchObject({
+      start: ph(2026, 9, 5, 0),
+      end: null,
+      label: "Since 5 Sep 2026",
+    });
+    expect(customRange("", "2026-09-17")).toMatchObject({
+      start: null,
+      end: ph(2026, 9, 18, 0),
+      label: "Up to 17 Sep 2026",
+    });
+  });
+
+  it("covers everything until a date is picked", () => {
+    expect(customRange("", "")).toMatchObject({ start: null, end: null, label: "Pick two dates" });
+    expect(customRange("not a date", "")).toMatchObject({ start: null, end: null });
+  });
+
+  it("matches billing months that overlap it", () => {
+    const range = customRange("2026-09-05", "2026-10-02");
+    expect(monthWithinRange("SEP 2026", range)).toBe(true);
+    expect(monthWithinRange("OCT 2026", range)).toBe(true);
+    expect(monthWithinRange("AUG 2026", range)).toBe(false);
   });
 });
 

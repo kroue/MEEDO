@@ -14,12 +14,8 @@ import {
   isDisconnectionEligible,
 } from "@/lib/billing";
 import { formatCompactPeso, getFullName, formatPeso } from "@/lib/utils";
-import {
-  isoWithinRange,
-  monthWithinRange,
-  rangeFor,
-  type RangePreset,
-} from "@/lib/dateRange";
+import { isoWithinRange, monthWithinRange } from "@/lib/dateRange";
+import { useDateRange } from "@/lib/useDateRange";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
 import {
   Card,
@@ -133,12 +129,12 @@ export default function ReportsPage() {
   // — the disconnection notice in the header — can land on the right one.
   const [tab, setTab] = useState("collections");
 
-  // The stretch of time the figures cover. Anything that happened on a date —
-  // a bill issued, money taken — is counted only inside it. What an account
-  // owes right now is a standing figure, and the delinquency tab says so.
-  const [period, setPeriod] = useState<RangePreset>("all");
-  const range = useMemo(() => rangeFor(period), [period]);
-  const wholeArchive = period === "all";
+  // The stretch of time the figures cover — a preset, or two dates off a
+  // calendar. Anything that happened on a date (a bill issued, money taken) is
+  // counted only inside it. What an account owes right now is a standing
+  // figure, and the delinquency tab says so.
+  const periodState = useDateRange();
+  const { range, wholeArchive } = periodState;
   useEffect(() => {
     const applyHash = () => {
       const fromHash = window.location.hash.slice(1);
@@ -447,7 +443,7 @@ export default function ReportsPage() {
         </div>
 
         <div className="flex items-end gap-3">
-          <DateRangeFilter value={period} onChange={setPeriod} range={range} />
+          <DateRangeFilter state={periodState} />
 
         <DropdownMenu>
           <DropdownMenuTrigger

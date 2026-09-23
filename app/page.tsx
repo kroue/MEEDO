@@ -6,7 +6,8 @@ import { fetchRecentBills, fetchRecentPayments } from "@/lib/firebase/bills";
 import type { BillDocument, PaymentDocument } from "@/lib/firebase/types";
 import { getCubicUsed } from "@/lib/firebase/types";
 import { isAccountApproved, monthSortKey, waterChargeOf } from "@/lib/billing";
-import { isoWithinRange, monthWithinRange, rangeFor, type RangePreset } from "@/lib/dateRange";
+import { isoWithinRange, monthWithinRange } from "@/lib/dateRange";
+import { useDateRange } from "@/lib/useDateRange";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
 import { formatCompact, formatCompactPeso, getFullName, formatPeso } from "@/lib/utils";
 import {
@@ -73,12 +74,12 @@ export default function DashboardPage() {
     [allConcessionaires]
   );
 
-  // The stretch of time the figures cover. What happened on a date — money
-  // taken, water billed — is counted only inside it; how many accounts exist
-  // and what they owe are standing figures either way.
-  const [period, setPeriod] = useState<RangePreset>("all");
-  const range = useMemo(() => rangeFor(period), [period]);
-  const wholeArchive = period === "all";
+  // The stretch of time the figures cover — a preset, or two dates off a
+  // calendar. What happened on a date (money taken, water billed) is counted
+  // only inside it; how many accounts exist and what they owe are standing
+  // figures either way.
+  const periodState = useDateRange();
+  const { range, wholeArchive } = periodState;
 
   // Bills and payments live in sub-collections now, so the chart and the feed
   // read them directly instead of from arrays that new accounts no longer have.
@@ -236,7 +237,7 @@ export default function DashboardPage() {
             Water district operations & key performance indicators
           </p>
         </div>
-        <DateRangeFilter value={period} onChange={setPeriod} range={range} />
+        <DateRangeFilter state={periodState} />
       </div>
 
       {loading ? (

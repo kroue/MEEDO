@@ -13,7 +13,7 @@
  * to, and a week starts on Monday as the office's week does.
  */
 
-export type RangePreset = "day" | "week" | "month" | "year" | "all";
+export type RangePreset = "day" | "week" | "month" | "year" | "custom" | "all";
 
 export interface DateRange {
   /** Inclusive, epoch millis. Null for "everything on record". */
@@ -30,6 +30,7 @@ export const RANGE_PRESETS: ReadonlyArray<{ preset: RangePreset; label: string }
   { preset: "week", label: "This week" },
   { preset: "month", label: "This month" },
   { preset: "year", label: "This year" },
+  { preset: "custom", label: "Custom range" },
   { preset: "all", label: "All time" },
 ];
 
@@ -61,10 +62,44 @@ function officeMidnight(year: number, month: number, day: number): number {
   return Date.UTC(year, month, day) - PH_OFFSET_MS;
 }
 
+/**
+ * Two dates picked off a calendar, as the "YYYY-MM-DD" an `<input type="date">`
+ * gives — read as office dates, and inclusive of both days, because someone
+ * choosing the 1st and the 30th means the whole month.
+ *
+ * Forgiving: dates the wrong way round are swapped, and one date alone leaves
+ * the other end open ("everything since the 5th").
+ */
+export function customRange(fromDate: string, toDate: string): DateRange {
+  let from = parseDateInput(fromDate);
+  let to = parseDateInput(toDate);
+  if (from && to && from.millis > to.millis) [from, to] = [to, from];
+
+  if (!from && !to) {
+    return { start: null, end: null, preset: "custom", label: "Pick two dates" };
+  }
+  return {
+    start: from ? from.millis : null,
+    end: to ? to.millis + MS_PER_DAY : null,
+    preset: "custom",
+    label: from && to ? `${from.label} – ${to.label}` : from ? `Since ${from.label}` : `Up to ${to!.label}`,
+  };
+}
+
+function parseDateInput(value: string): { millis: number; label: string } | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value?.trim() ?? "");
+  if (!match) return null;
+  const [year, month, day] = [Number(match[1]), Number(match[2]) - 1, Number(match[3])];
+  const millis = officeMidnight(year, month, day);
+  if (Number.isNaN(millis)) return null;
+  return { millis, label: `${day} ${MONTHS[month].slice(0, 3)} ${year}` };
+}
+
 /** The range a preset covers around `now`. */
 export function rangeFor(preset: RangePreset, now: number = Date.now()): DateRange {
-  if (preset === "all") {
-    return { start: null, end: null, preset, label: "All time" };
+  if (preset === "all" || preset === "custom") {
+    // A custom range needs its two dates; see customRange.
+    return { start: null, end: null, preset, label: preset === "all" ? "All time" : "Pick two dates" };
   }
 
   const office = officeDate(now);
