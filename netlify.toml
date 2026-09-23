@@ -1,0 +1,28 @@
+# How Netlify builds the console.
+#
+# Every field here is stated rather than detected. This repository also carries
+# a Cloudflare Worker build — open-next.config.ts and wrangler.jsonc, both at
+# the root — and leaving the framework to be guessed is one way to end up
+# publishing nothing and serving Netlify's own 404 at every path.
+
+[build]
+  # `npm run build`, not `next build`: the script passes --webpack, and the
+  # webpack() hook in next.config.ts is ignored under Turbopack.
+  command = "npm run build"
+
+  # What the Next runtime expects to be handed. It turns this into the
+  # functions that serve the pages rendered per request — an account, a bill,
+  # a printed receipt — so it is not a plain directory of files to upload.
+  publish = ".next"
+
+[build.environment]
+  # The version Netlify already gives this build. Stated so that a change to
+  # their default cannot move the console onto a different Node without the
+  # change showing up in a diff first.
+  NODE_VERSION = "24"
+
+# Deliberately left unpinned: Netlify maintain this against every Next release,
+# and pinning it is how a project ends up on an adapter older than the Next
+# version in package.json.
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
