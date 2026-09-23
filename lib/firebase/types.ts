@@ -403,7 +403,8 @@ export type NewConcessionaireInput = Omit<Concessionaire, "id" | "createdAt" | "
 /**
  * Derive cubicUsed from a MonthlyBillingRecord.
  */
-export function getCubicUsed(record: MonthlyBillingRecord): number {
+/** Takes anything holding the two readings — a history row or a bill document. */
+export function getCubicUsed(record: { reading: number; previousReading: number }): number {
   return Math.max(0, record.reading - record.previousReading);
 }
 

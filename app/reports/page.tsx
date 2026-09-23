@@ -15,6 +15,13 @@ import {
 } from "@/lib/billing";
 import { formatCompactPeso, getFullName, formatPeso } from "@/lib/utils";
 import {
+  isoWithinRange,
+  monthWithinRange,
+  rangeFor,
+  type RangePreset,
+} from "@/lib/dateRange";
+import { DateRangeFilter } from "@/components/DateRangeFilter";
+import {
   Card,
   CardContent,
   CardDescription,
@@ -125,6 +132,13 @@ export default function ReportsPage() {
   // The open tab is mirrored in the URL hash (/reports#delinquency), so a link
   // — the disconnection notice in the header — can land on the right one.
   const [tab, setTab] = useState("collections");
+
+  // The stretch of time the figures cover. Anything that happened on a date —
+  // a bill issued, money taken — is counted only inside it. What an account
+  // owes right now is a standing figure, and the delinquency tab says so.
+  const [period, setPeriod] = useState<RangePreset>("all");
+  const range = useMemo(() => rangeFor(period), [period]);
+  const wholeArchive = period === "all";
   useEffect(() => {
     const applyHash = () => {
       const fromHash = window.location.hash.slice(1);
@@ -148,6 +162,28 @@ export default function ReportsPage() {
     [allConcessionaires]
   );
 
+  // ── Monthly collections, stacked by tier ─────────────────────────────────
+  //
+  // The only figure here that genuinely needs per-month rows, so it is the one
+  // place that reads bills across accounts. Bounded: the chart shows recent
+  // months, not the whole archive.
+  const [bills, setBills] = useState<BillDocument[] | null>(null);
+  // Settled either way, so a failed read doesn't hold the PDF back forever —
+  // the monthly figures then fall back to what the accounts carry inline.
+  const [billsSettled, setBillsSettled] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchRecentBills(1000)
+      .then((rows) => !cancelled && setBills(rows))
+      .catch((e) => !cancelled && console.error("Failed to read bills", e))
+      .finally(() => !cancelled && setBillsSettled(true));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+
   // ── Collection summary, by tier ──────────────────────────────────────────
   //
   // "Billed" is the water actually sold — `waterChargeOf`, not `pesoAmount`.
@@ -165,8 +201,43 @@ export default function ReportsPage() {
   // keeping it: these figures no longer require reading a single bill, however
   // many years of history an account has. Accounts the storage migration
   // hasn't reached fall back to their inline arrays.
+  //
+  // Those lifetime totals are the wrong answer for a chosen period, so for one
+  // the figures come from the bills issued inside it and the payments received
+  // inside it — each counted once, on its own date.
   const collectionSummary = useMemo(() => {
     const byTier = new Map<string, { category: string; billed: number; collected: number; accounts: number }>();
+
+    if (!wholeArchive) {
+      const billedByAccount = new Map<string, number>();
+      (bills ?? []).forEach((b) => {
+        if (b.voided || !monthWithinRange(b.month, range)) return;
+        billedByAccount.set(
+          b.concessionaireId,
+          (billedByAccount.get(b.concessionaireId) ?? 0) + waterChargeOf(b)
+        );
+      });
+
+      concessionaires.forEach((c) => {
+        const tier = TIER_LABELS[c.classification] ?? c.classification;
+        const entry = byTier.get(tier) || { category: tier, billed: 0, collected: 0, accounts: 0 };
+        entry.accounts += 1;
+
+        // Accounts the storage migration hasn't reached keep bills inline.
+        const inlineBilled = (c.billingHistory || [])
+          .filter((h) => monthWithinRange(h.month, range))
+          .reduce((sum, h) => sum + waterChargeOf(h), 0);
+        entry.billed += billedByAccount.get(c.id) ?? inlineBilled;
+
+        entry.collected += (c.payments || [])
+          .filter((p) => !p.voided && isoWithinRange(p.date, range))
+          .reduce((sum, p) => sum + p.amount, 0);
+
+        byTier.set(tier, entry);
+      });
+      return Array.from(byTier.values());
+    }
+
     concessionaires.forEach((c) => {
       const tier = TIER_LABELS[c.classification] ?? c.classification;
       const entry = byTier.get(tier) || { category: tier, billed: 0, collected: 0, accounts: 0 };
@@ -195,7 +266,7 @@ export default function ReportsPage() {
       byTier.set(tier, entry);
     });
     return Array.from(byTier.values());
-  }, [concessionaires]);
+  }, [concessionaires, bills, range, wholeArchive]);
 
   const pieData = useMemo(
     () =>
@@ -204,27 +275,6 @@ export default function ReportsPage() {
         .map((s) => ({ name: s.category, value: s.billed, color: TIER_COLORS[s.category] ?? "#94a3b8" })),
     [collectionSummary]
   );
-
-  // ── Monthly collections, stacked by tier ─────────────────────────────────
-  //
-  // The only figure here that genuinely needs per-month rows, so it is the one
-  // place that reads bills across accounts. Bounded: the chart shows recent
-  // months, not the whole archive.
-  const [bills, setBills] = useState<BillDocument[] | null>(null);
-  // Settled either way, so a failed read doesn't hold the PDF back forever —
-  // the monthly figures then fall back to what the accounts carry inline.
-  const [billsSettled, setBillsSettled] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    fetchRecentBills(1000)
-      .then((rows) => !cancelled && setBills(rows))
-      .catch((e) => !cancelled && console.error("Failed to read bills", e))
-      .finally(() => !cancelled && setBillsSettled(true));
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const monthlyCollections = useMemo(() => {
     const byMonth = new Map<string, Record<string, number | string>>();
@@ -238,7 +288,7 @@ export default function ReportsPage() {
 
     if (bills && bills.length > 0) {
       bills.forEach((b) => {
-        if (b.voided) return;
+        if (b.voided || !monthWithinRange(b.month, range)) return;
         add(b.month, b.classification, waterChargeOf(b));
       });
     }
@@ -249,7 +299,7 @@ export default function ReportsPage() {
     );
     concessionaires.forEach((c) => {
       (c.billingHistory || []).forEach((h) => {
-        if (seen.has(`${c.id}|${h.month}`)) return;
+        if (seen.has(`${c.id}|${h.month}`) || !monthWithinRange(h.month, range)) return;
         add(h.month, c.classification, waterChargeOf(h));
       });
     });
@@ -257,7 +307,7 @@ export default function ReportsPage() {
     return Array.from(byMonth.values()).sort(
       (a, b) => monthSortKey(a.month as string) - monthSortKey(b.month as string)
     );
-  }, [concessionaires, bills]);
+  }, [concessionaires, bills, range]);
 
   const tiers = useMemo(() => Array.from(new Set(collectionSummary.map((s) => s.category))), [collectionSummary]);
 
@@ -266,11 +316,25 @@ export default function ReportsPage() {
     const counts = CONSUMPTION_BRACKETS.map((b) => ({ ...b, count: 0 }));
     let totalWithReadings = 0;
 
+    // For a chosen period, "latest" means the newest bill inside it — an
+    // account's current reading says nothing about what it used last March.
+    const latestInRange = new Map<string, BillDocument>();
+    if (!wholeArchive) {
+      (bills ?? []).forEach((b) => {
+        if (b.voided || !monthWithinRange(b.month, range)) return;
+        const held = latestInRange.get(b.concessionaireId);
+        if (!held || monthSortKey(b.month) > monthSortKey(held.month)) latestInRange.set(b.concessionaireId, b);
+      });
+    }
+
     concessionaires.forEach((c) => {
-      // billingSummary.latestBill is maintained on every write, so this needs
-      // no read of the bills sub-collection.
-      const latest =
-        c.billingSummary?.latestBill ?? sortHistoryDesc(c.billingHistory || [])[0] ?? null;
+      // billingSummary.latestBill is maintained on every write, so the whole
+      // archive needs no read of the bills sub-collection.
+      const latest = wholeArchive
+        ? c.billingSummary?.latestBill ?? sortHistoryDesc(c.billingHistory || [])[0] ?? null
+        : latestInRange.get(c.id) ??
+          sortHistoryDesc((c.billingHistory || []).filter((h) => monthWithinRange(h.month, range)))[0] ??
+          null;
       if (!latest) return;
       const consumption = getCubicUsed(latest);
       const bracket =
@@ -284,7 +348,7 @@ export default function ReportsPage() {
       count: b.count,
       percentage: totalWithReadings > 0 ? Math.round((b.count / totalWithReadings) * 100) : 0,
     }));
-  }, [concessionaires]);
+  }, [concessionaires, bills, range, wholeArchive]);
 
   // ── Delinquency ───────────────────────────────────────────────────────────
   //
@@ -382,6 +446,9 @@ export default function ReportsPage() {
           </p>
         </div>
 
+        <div className="flex items-end gap-3">
+          <DateRangeFilter value={period} onChange={setPeriod} range={range} />
+
         <DropdownMenu>
           <DropdownMenuTrigger
             disabled={downloading}
@@ -423,6 +490,7 @@ export default function ReportsPage() {
             </DropdownMenuGroup>
           </DropdownMenuContent>
         </DropdownMenu>
+        </div>
       </div>
 
       {downloadError && (
@@ -636,6 +704,13 @@ export default function ReportsPage() {
 
         {/* Delinquency Tab */}
         <TabsContent value="delinquency" className="space-y-6">
+          {/* What is owed is owed today, whatever period the rest is showing. */}
+          {!wholeArchive && (
+            <p className="text-xs text-slate-500">
+              Balances and overdue days are as they stand today — the {range.label.toLowerCase()}{" "}
+              filter applies to collections and consumption, not to what an account owes now.
+            </p>
+          )}
           <div className="grid gap-4 sm:grid-cols-3">
             <Card className="border-amber-100">
               <CardContent className="pt-6">

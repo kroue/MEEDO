@@ -6,6 +6,8 @@ import { fetchRecentBills, fetchRecentPayments } from "@/lib/firebase/bills";
 import type { BillDocument, PaymentDocument } from "@/lib/firebase/types";
 import { getCubicUsed } from "@/lib/firebase/types";
 import { isAccountApproved, monthSortKey, waterChargeOf } from "@/lib/billing";
+import { isoWithinRange, monthWithinRange, rangeFor, type RangePreset } from "@/lib/dateRange";
+import { DateRangeFilter } from "@/components/DateRangeFilter";
 import { formatCompact, formatCompactPeso, getFullName, formatPeso } from "@/lib/utils";
 import {
   Card,
@@ -71,6 +73,13 @@ export default function DashboardPage() {
     [allConcessionaires]
   );
 
+  // The stretch of time the figures cover. What happened on a date — money
+  // taken, water billed — is counted only inside it; how many accounts exist
+  // and what they owe are standing figures either way.
+  const [period, setPeriod] = useState<RangePreset>("all");
+  const range = useMemo(() => rangeFor(period), [period]);
+  const wholeArchive = period === "all";
+
   // Bills and payments live in sub-collections now, so the chart and the feed
   // read them directly instead of from arrays that new accounts no longer have.
   const [recentBills, setRecentBills] = useState<BillDocument[]>([]);
@@ -99,25 +108,46 @@ export default function DashboardPage() {
     // Cash actually received. Summing each bill's amountPaid counted the same
     // money once per month it was carried forward — the same double-count
     // Reports had — so this uses the maintained summary, then real receipts.
+    //
+    // For a chosen period the summary's lifetime figure is the wrong answer,
+    // so the receipts are counted by their own dates instead.
     let totalCollections = 0;
-    concessionaires.forEach((c) => {
-      if (c.billingSummary) {
-        totalCollections += c.billingSummary.totalCollected;
-      } else {
+    if (wholeArchive) {
+      concessionaires.forEach((c) => {
+        if (c.billingSummary) {
+          totalCollections += c.billingSummary.totalCollected;
+        } else {
+          (c.payments || []).forEach((p) => {
+            if (!p.voided) totalCollections += p.amount;
+          });
+        }
+      });
+    } else {
+      const approvedIds = new Set(concessionaires.map((c) => c.id));
+      const counted = new Set<string>();
+      recentPaymentDocs.forEach((p) => {
+        if (p.voided || !approvedIds.has(p.concessionaireId)) return;
+        if (!isoWithinRange(p.date, range)) return;
+        counted.add(p.orNumber);
+        totalCollections += p.amount;
+      });
+      // Accounts the storage migration hasn't reached keep receipts inline.
+      concessionaires.forEach((c) => {
         (c.payments || []).forEach((p) => {
-          if (!p.voided) totalCollections += p.amount;
+          if (p.voided || counted.has(p.orNumber)) return;
+          if (isoWithinRange(p.date, range)) totalCollections += p.amount;
         });
-      }
-    });
+      });
+    }
 
     return { totalAccounts, activeAccounts, delinquentCount: delinquent.length, totalOutstanding, delinquencyRate, totalCollections };
-  }, [concessionaires]);
+  }, [concessionaires, recentPaymentDocs, range, wholeArchive]);
 
   const kpis = [
     {
       title: "Total Collections",
       value: formatPeso(stats.totalCollections),
-      subtitle: "all-time, all barangays",
+      subtitle: wholeArchive ? "all-time, all barangays" : `${range.label}, all barangays`,
       icon: DollarSign,
       accent: "emerald" as const,
     },
@@ -162,19 +192,19 @@ export default function DashboardPage() {
     recentBills.forEach((b) => {
       if (!approvedIds.has(b.concessionaireId)) return;
       seen.add(`${b.concessionaireId}|${b.month}`);
-      add(b);
+      if (monthWithinRange(b.month, range)) add(b);
     });
     // Accounts the storage migration hasn't reached still hold history inline.
     concessionaires.forEach((c) => {
       (c.billingHistory || []).forEach((h) => {
-        if (!seen.has(`${c.id}|${h.month}`)) add(h);
+        if (!seen.has(`${c.id}|${h.month}`) && monthWithinRange(h.month, range)) add(h);
       });
     });
 
     return Array.from(byMonth.values())
       .sort((a, b) => monthSortKey(a.month) - monthSortKey(b.month))
       .slice(-12);
-  }, [concessionaires, recentBills]);
+  }, [concessionaires, recentBills, range]);
 
   const recentPayments = useMemo(() => {
     const rows: { orNumber: string; concessionaireName: string; amount: number; date: string; recordedBy: string }[] = [];
@@ -197,13 +227,16 @@ export default function DashboardPage() {
   return (
     <div className="space-y-6 max-w-[1400px] mx-auto">
       {/* Page Header */}
-      <div className="flex flex-col gap-1 mb-6 animate-in fade-in slide-in-from-top-4 duration-500 ease-snappy">
-        <h2 className="text-2xl md:text-3xl font-bold tracking-tight text-slate-900">
-          Overview
-        </h2>
-        <p className="text-sm font-medium text-slate-600">
-          Water district operations & key performance indicators
-        </p>
+      <div className="mb-6 flex flex-col gap-4 animate-in fade-in slide-in-from-top-4 duration-500 ease-snappy sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex flex-col gap-1">
+          <h2 className="text-2xl md:text-3xl font-bold tracking-tight text-slate-900">
+            Overview
+          </h2>
+          <p className="text-sm font-medium text-slate-600">
+            Water district operations & key performance indicators
+          </p>
+        </div>
+        <DateRangeFilter value={period} onChange={setPeriod} range={range} />
       </div>
 
       {loading ? (
