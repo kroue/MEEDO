@@ -7,6 +7,7 @@ import { useAuth } from "@/lib/auth/AuthContext";
 import {
   approveConcessionaire,
   rejectConcessionaire,
+  resubmitConcessionaire,
   subscribeToApprovalQueue,
 } from "@/lib/firebase/concessionaires";
 import type { Concessionaire } from "@/lib/firebase/types";
@@ -31,7 +32,21 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { AlertCircle, CheckCircle2, Clock, Loader2, XCircle } from "lucide-react";
+import {
+  AlertCircle,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  Clock,
+  Loader2,
+  RotateCcw,
+  XCircle,
+} from "lucide-react";
+
+/** Opens the account with a way back to this queue — see app/concessionaires/[id]. */
+function detailHref(id: string): string {
+  return `/concessionaires/${id}?from=approvals`;
+}
 
 function when(iso?: string): string {
   if (!iso) return "";
@@ -50,6 +65,48 @@ function when(iso?: string): string {
  * the reason — so they know what happened without having to ask. Renders nothing
  * when there's nothing to show.
  */
+/**
+ * Everything the request was submitted with, opened out under the row — so an
+ * admin can decide without leaving the queue, and without taking the rest of
+ * the queue off screen.
+ */
+function RequestDetails({ account }: { account: Concessionaire }) {
+  const rows: Array<[string, string]> = [
+    ["Account no.", account.accountNumber || "Assigned when approved"],
+    ["Meter no.", account.meterNumber || "—"],
+    ["Barangay", account.barangay || "—"],
+    ["Purok", account.purok || "—"],
+    ["Classification", account.classification || "—"],
+    ["Service status", account.status || "—"],
+    ["Requested by", account.approvalRequestedBy || "unknown"],
+    ["Requested", when(account.approvalRequestedAt) || "—"],
+  ];
+
+  return (
+    <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+      <dl className="grid gap-x-6 gap-y-1.5 sm:grid-cols-2">
+        {rows.map(([label, value]) => (
+          <div key={label} className="flex justify-between gap-3 text-xs">
+            <dt className="text-slate-500">{label}</dt>
+            <dd className="text-right font-medium text-slate-800">{value}</dd>
+          </div>
+        ))}
+      </dl>
+      {account.connectionFeeDetails && (
+        <p className="mt-2 text-xs text-slate-500">
+          A connection fee is already recorded on this request.
+        </p>
+      )}
+      <Link
+        href={detailHref(account.id)}
+        className="mt-2 inline-block text-xs font-medium text-sky-700 hover:underline"
+      >
+        Open the full account →
+      </Link>
+    </div>
+  );
+}
+
 export function ApprovalQueue({ onChanged }: { onChanged?: () => void }) {
   const { user, role } = useAuth();
   const isAdmin = role === "admin";
@@ -64,6 +121,9 @@ export function ApprovalQueue({ onChanged }: { onChanged?: () => void }) {
   const [reason, setReason] = useState("");
   const [rejectError, setRejectError] = useState<string | null>(null);
   const [rejecting, setRejecting] = useState(false);
+
+  /** Which request is opened out to show everything it was submitted with. */
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   useEffect(
     () =>
@@ -108,6 +168,19 @@ export function ApprovalQueue({ onChanged }: { onChanged?: () => void }) {
       onChanged?.();
     } catch (e) {
       setActionError(userMessage(e, "Couldn't approve that account."));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function resubmit(a: Concessionaire) {
+    setBusyId(a.id);
+    setActionError(null);
+    try {
+      await resubmitConcessionaire(a.id, email);
+      onChanged?.();
+    } catch (e) {
+      setActionError(userMessage(e, "Couldn't re-submit that account."));
     } finally {
       setBusyId(null);
     }
@@ -167,10 +240,25 @@ export function ApprovalQueue({ onChanged }: { onChanged?: () => void }) {
         {pending.length > 0 && (
           <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200">
             {pending.map((a) => (
-              <li key={a.id} className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="min-w-0">
+              <li key={a.id} className="p-3">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex min-w-0 items-start gap-2">
+                  <button
+                    type="button"
+                    aria-expanded={expandedId === a.id}
+                    aria-label={expandedId === a.id ? "Hide the details" : "Show the details"}
+                    onClick={() => setExpandedId(expandedId === a.id ? null : a.id)}
+                    className="mt-0.5 shrink-0 rounded p-0.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
+                  >
+                    {expandedId === a.id ? (
+                      <ChevronDown className="h-4 w-4" />
+                    ) : (
+                      <ChevronRight className="h-4 w-4" />
+                    )}
+                  </button>
+                  <div className="min-w-0">
                   <Link
-                    href={`/concessionaires/${a.id}`}
+                    href={detailHref(a.id)}
                     className="text-sm font-semibold text-slate-900 hover:text-sky-600 hover:underline"
                   >
                     {getFullName(a)}
@@ -184,6 +272,7 @@ export function ApprovalQueue({ onChanged }: { onChanged?: () => void }) {
                     Requested by {a.approvalRequestedBy || "unknown"}
                     {a.approvalRequestedAt ? ` · ${when(a.approvalRequestedAt)}` : ""}
                   </p>
+                  </div>
                 </div>
 
                 {isAdmin ? (
@@ -221,6 +310,9 @@ export function ApprovalQueue({ onChanged }: { onChanged?: () => void }) {
                     Waiting for an admin
                   </Badge>
                 )}
+                </div>
+
+                {expandedId === a.id && <RequestDetails account={a} />}
               </li>
             ))}
           </ul>
@@ -243,6 +335,28 @@ export function ApprovalQueue({ onChanged }: { onChanged?: () => void }) {
                     Rejected by {a.approvalReviewedBy}
                     {a.approvalReviewedAt ? ` · ${when(a.approvalReviewedAt)}` : ""}
                   </p>
+                  <div className="mt-2 flex items-center gap-3">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-8 border-slate-300 text-xs font-semibold text-slate-700 hover:bg-white"
+                      disabled={busyId !== null}
+                      onClick={() => resubmit(a)}
+                    >
+                      {busyId === a.id ? (
+                        <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
+                      )}
+                      Re-submit for approval
+                    </Button>
+                    <Link
+                      href={detailHref(a.id)}
+                      className="text-xs font-medium text-sky-700 hover:underline"
+                    >
+                      Fix the details first
+                    </Link>
+                  </div>
                 </li>
               ))}
             </ul>

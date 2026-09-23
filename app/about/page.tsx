@@ -22,9 +22,10 @@ import {
 import {
   APP_NAME,
   APP_VERSION,
+  COMPANY_NAME,
   COPYRIGHT_HOLDER,
   COPYRIGHT_YEAR,
-  DEVELOPER,
+  DEVELOPERS,
   OPEN_SOURCE,
   SYSTEM_ADDRESS,
   SYSTEM_NAME,
@@ -105,28 +106,32 @@ export default function AboutPage() {
           title="Developer"
           description="Who built the system, and who to reach when something is wrong with it."
         />
-        <CardContent className="space-y-3">
-          <p className="text-sm font-medium text-slate-800">{DEVELOPER.name}</p>
-          <div className="grid gap-2 sm:grid-cols-2">
-            <a
-              href={`mailto:${DEVELOPER.email}`}
-              className="flex items-center gap-2 text-sm text-sky-700 hover:underline"
-            >
-              <Mail className="h-4 w-4 shrink-0 text-slate-400" />
-              <span className="truncate">{DEVELOPER.email}</span>
-            </a>
-            <a
-              href={`tel:${DEVELOPER.phone.replace(/\s/g, "")}`}
-              className="flex items-center gap-2 text-sm text-sky-700 hover:underline"
-            >
-              <Phone className="h-4 w-4 shrink-0 text-slate-400" />
-              {DEVELOPER.phone}
-            </a>
-          </div>
+        <CardContent className="space-y-4">
+          {DEVELOPERS.map((developer) => (
+            <div key={developer.email} className="space-y-1.5">
+              <p className="text-sm font-medium text-slate-800">{developer.name}</p>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <a
+                  href={`mailto:${developer.email}`}
+                  className="flex items-center gap-2 text-sm text-sky-700 hover:underline"
+                >
+                  <Mail className="h-4 w-4 shrink-0 text-slate-400" />
+                  <span className="truncate">{developer.email}</span>
+                </a>
+                <a
+                  href={`tel:${developer.phone.replace(/\s/g, "")}`}
+                  className="flex items-center gap-2 text-sm text-sky-700 hover:underline"
+                >
+                  <Phone className="h-4 w-4 shrink-0 text-slate-400" />
+                  {developer.phone}
+                </a>
+              </div>
+            </div>
+          ))}
           <p className="text-xs text-slate-500">
             For a problem with a household&apos;s records or a bill, go to an admin first — they
-            can see the account and the audit trail. Reach the developer for something the
-            console itself is doing wrong.
+            can see the account and the audit trail. Reach a developer for something the console
+            itself is doing wrong.
           </p>
         </CardContent>
       </Card>
@@ -138,9 +143,9 @@ export default function AboutPage() {
             © {COPYRIGHT_YEAR} {COPYRIGHT_HOLDER}. All rights reserved.
           </p>
           <p className="text-sm text-slate-600">
-            The software and its source code belong to {SYSTEM_NAME}, which may use, modify and
-            keep running it without further permission from the developer. The records it holds —
-            every concessionaire, bill, payment and reading — belong to the office alone.
+            The software and its source code belong to {COMPANY_NAME}, which built it for{" "}
+            {SYSTEM_NAME}. The records it holds — every concessionaire, bill, payment and
+            reading — belong to the office alone.
           </p>
           <p className="text-xs text-slate-500">
             Third-party components listed below remain under their own licences and are not

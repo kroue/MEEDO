@@ -25,6 +25,8 @@ import {
   addDoc,
   collection,
   doc,
+  getDocs,
+  limit,
   onSnapshot,
   query,
   runTransaction,
@@ -90,7 +92,41 @@ function ownerFields(concessionaire: Concessionaire) {
 
 // ── Submitting ─────────────────────────────────────────────────────────────
 
+/**
+ * Thrown when the same request is already sitting in the queue.
+ *
+ * A second tap on "Send for approval" — the button not yet redrawn, the phone
+ * or PC slow — used to put a second identical request in front of the admin,
+ * and approving both posted the money twice. One open request of a kind per
+ * account is all that can ever be waiting.
+ */
+export class DuplicateRequestError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DuplicateRequestError";
+  }
+}
+
 async function submit(request: NewServiceRequest): Promise<string> {
+  // Scoped to the person sending it, because that is what the security rules
+  // let a staff account read — and a double tap is the same person twice.
+  const alreadyWaiting = await getDocs(
+    query(
+      requestsRef(),
+      where("requestedBy", "==", request.requestedBy),
+      where("concessionaireId", "==", request.concessionaireId),
+      where("kind", "==", request.kind),
+      where("status", "==", "PENDING"),
+      limit(1)
+    )
+  );
+  if (!alreadyWaiting.empty) {
+    throw new DuplicateRequestError(
+      `A ${REQUEST_KIND_LABELS[request.kind].toLowerCase()} for this account is already waiting for an admin. ` +
+        "Check the approvals page before sending another."
+    );
+  }
+
   const created = await addDoc(requestsRef(), request);
   logAuditEvent(
     "Account Update",

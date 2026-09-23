@@ -122,6 +122,25 @@ service cloud.firestore {
       //
       // `billingHistory` is still listed for readers because accounts the
       // storage migration hasn't reached yet keep theirs; nothing writes it.
+      // Re-submitting a rejected account. The staff member who asked for it
+      // (or an admin) may put it back in the queue once they have fixed what
+      // the rejection named — REJECTED to PENDING and nothing else, stamped
+      // with their own identity, with the old verdict cleared. Any other move
+      // of approvalStatus stays with an admin.
+      allow update: if roleExists()
+        && resource.data.get('approvalStatus', '') == 'REJECTED'
+        && request.resource.data.get('approvalStatus', '') == 'PENDING'
+        && request.resource.data.get('approvalRequestedBy', '') == request.auth.token.email
+        && (isAdmin() || resource.data.get('approvalRequestedBy', '') == request.auth.token.email)
+        && changed().hasOnly([
+             'approvalStatus',
+             'approvalRequestedBy',
+             'approvalRequestedAt',
+             'approvalRejectionReason',
+             'approvalReviewedBy',
+             'approvalReviewedAt'
+           ]);
+
       allow update: if isAdmin()
         || (isStaff() && !changed().hasAny([
               'approvalStatus',

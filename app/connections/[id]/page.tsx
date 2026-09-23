@@ -455,7 +455,10 @@ export default function ConnectionDetailsPage() {
             <Button 
               className="w-full bg-sky-600 hover:bg-sky-700 text-white font-semibold shadow-sm"
               onClick={handleInitialize}
-              disabled={isInitializing}
+              // Stays disabled once a request has gone to an admin, so a second
+              // tap can't put the same connection in the queue twice. (The
+              // queue itself refuses a duplicate too — see requests.ts.)
+              disabled={isInitializing || requestNotice !== null}
             >
               {isInitializing ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <CheckCircle2 className="h-4 w-4 mr-2" />}
               {canPostDirectly ? "Generate Connection Balance" : "Send for Approval"}

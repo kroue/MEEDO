@@ -378,11 +378,62 @@ export async function rejectConcessionaire(
 
 // ── UPDATE — Status & Details (New for Editing) ────────────────────────────
 
+/**
+ * Puts a rejected account back in front of an admin, once whoever asked for it
+ * has fixed what the rejection named. The rejection reason and who gave it are
+ * cleared, so the queue shows a fresh request rather than an old verdict.
+ *
+ * Open to the staff member who asked for the account and to any admin.
+ */
+export async function resubmitConcessionaire(
+  concessionaireId: string,
+  actorEmail: string
+): Promise<void> {
+  const docRef = doc(db, CONCESSIONAIRES_COLLECTION, concessionaireId);
+  const name = await runTransaction(db, async (transaction) => {
+    const snapshot = await transaction.get(docRef);
+    if (!snapshot.exists()) throw new ApprovalStateError("That account no longer exists.");
+    const data = snapshot.data() as Concessionaire;
+    if (data.approvalStatus !== "REJECTED") {
+      throw new ApprovalStateError(
+        data.approvalStatus === "PENDING"
+          ? "This account is already waiting for an admin."
+          : "This account has already been approved."
+      );
+    }
+    transaction.update(docRef, {
+      approvalStatus: "PENDING",
+      approvalRequestedBy: actorEmail,
+      approvalRequestedAt: new Date().toISOString(),
+      approvalRejectionReason: deleteField(),
+      approvalReviewedBy: deleteField(),
+      approvalReviewedAt: deleteField(),
+    });
+    return getFullName(data);
+  });
+
+  logAuditEvent(
+    "Account Update",
+    `Re-submitted ${name || concessionaireId} for approval.`,
+    actorEmail
+  );
+}
+
 export async function updateConcessionaireDetails(
   concessionaireId: string,
   updates: Partial<Omit<Concessionaire, "id" | "createdAt" | "updatedAt">>,
   actorEmail: string
 ): Promise<void> {
+  // An account still waiting on an admin isn't an account yet: nothing should
+  // be done to it but approve or reject it. A rejected one can still be
+  // corrected — that is the whole point of re-submitting it.
+  const current = await fetchConcessionaireById(concessionaireId);
+  if (current && current.approvalStatus === "PENDING") {
+    throw new ApprovalStateError(
+      "This account is waiting for an admin's approval. It can't be changed until then."
+    );
+  }
+
   if (updates.meterNumber && (await isMeterNumberTaken(updates.meterNumber, concessionaireId))) {
     throw new DuplicateMeterNumberError(updates.meterNumber);
   }

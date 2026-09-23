@@ -134,11 +134,22 @@
 }
 
 @media print {
+  /* Browsers print their own header and footer into the page margin — the
+     window title, today's date, the address, the page number. On a statement
+     or a receipt that is somebody else's text at the top of an official
+     document. A page with no margin has nowhere to put them, so they go; the
+     document supplies its own margin below, and nothing lands on the edge of
+     the paper. */
+  @page {
+    margin: 0;
+  }
+
   html.print-job-active body > *:not([data-print-job]) {
     display: none !important;
   }
 
   html.print-job-active [data-print-job] {
     display: block;
+    padding: 12mm;
   }
 }

@@ -231,13 +231,18 @@ export function concessionaireDaysOverdue(c: DelinquencyInput, now: number = Dat
   return daysOverdue(delinquencyStart(c) ?? undefined, now);
 }
 
+/** Overridable `now` so a test can fix the clock rather than drift with the calendar. */
+
 /**
  * True if `c` has an outstanding balance that has been outstanding for 20+
  * days. Shared by the Reports delinquency tab, the Billing page and the top
  * nav so all three agree on what "eligible" means.
  */
-export function isConcessionaireDisconnectionEligible(c: DelinquencyInput): boolean {
-  return isDisconnectionEligible(concessionaireDaysOverdue(c));
+export function isConcessionaireDisconnectionEligible(
+  c: DelinquencyInput,
+  now: number = Date.now()
+): boolean {
+  return isDisconnectionEligible(concessionaireDaysOverdue(c, now));
 }
 
 // ── What was actually sold ──────────────────────────────────────────────────

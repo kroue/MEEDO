@@ -1,10 +1,10 @@
-/**
+﻿/**
  * Tests for lib/billing.ts.
  *
  * These helpers decide what a concessionaire is told they owe and whether the
  * office is shown them as disconnectable, so the cases below are written as
  * scenarios the office would recognise. Several exist because the behaviour was
- * wrong in production — the revenue double-count, the delinquency clock, and
+ * wrong in production â€” the revenue double-count, the delinquency clock, and
  * the zero-peso badge each produced a visible error.
  */
 
@@ -53,7 +53,7 @@ function record(over: Partial<MonthlyBillingRecord> = {}): MonthlyBillingRecord 
   };
 }
 
-// ── Month strings ────────────────────────────────────────────────────────────
+// â”€â”€ Month strings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 describe("currentMonthStr", () => {
   it("formats as three-letter uppercase month and four-digit year", () => {
@@ -63,7 +63,7 @@ describe("currentMonthStr", () => {
   });
 
   it("renders September as SEP, never SEPT", () => {
-    // The specific bug this guards: toLocaleString("default", …) follows the
+    // The specific bug this guards: toLocaleString("default", â€¦) follows the
     // browser's locale, and several locales abbreviate September as "Sept".
     // The phone always queries Locale.US ("SEP 2026"), so a mismatched
     // abbreviation silently handed the reader an empty route for one month a
@@ -116,7 +116,7 @@ describe("monthSortKey", () => {
   });
 });
 
-// ── Payment status badges ────────────────────────────────────────────────────
+// â”€â”€ Payment status badges â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 describe("paymentStatus", () => {
   it("reports the obvious cases", () => {
@@ -127,19 +127,19 @@ describe("paymentStatus", () => {
   });
 
   it("treats a zero-peso bill as settled, not unpaid", () => {
-    // Previously the "nothing paid" test ran first, so a ₱0 bill carried a red
+    // Previously the "nothing paid" test ran first, so a â‚±0 bill carried a red
     // UNPAID badge forever. It happens on imported and corrected records.
     expect(paymentStatus(0, 0)).toBe("PAID");
   });
 });
 
-// ── What was actually sold ───────────────────────────────────────────────────
+// â”€â”€ What was actually sold â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 describe("waterChargeOf", () => {
   it("returns only the water sold, not the rolled-forward balance", () => {
     // The bug this guards: summing pesoAmount counted the same debt once per
-    // month it went unpaid. ₱100 unpaid in June reappears inside July's ₱213
-    // and again inside August's ₱330 — ₱643 "billed" against ₱300 of water.
+    // month it went unpaid. â‚±100 unpaid in June reappears inside July's â‚±213
+    // and again inside August's â‚±330 â€” â‚±643 "billed" against â‚±300 of water.
     const august = record({
       pesoAmount: 330,
       minimumCharge: 100,
@@ -187,7 +187,7 @@ describe("waterChargeOf", () => {
   });
 });
 
-// ── Delinquency ──────────────────────────────────────────────────────────────
+// â”€â”€ Delinquency â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 describe("delinquencyStart", () => {
   it("is null when nothing is owed", () => {
@@ -224,13 +224,13 @@ describe("disconnection eligibility", () => {
       billingHistory: [record({ month: "SEP 2026", billingDate: daysAgo(1) })],
     };
     expect(concessionaireDaysOverdue(chronic, NOW)).toBe(400);
-    expect(isConcessionaireDisconnectionEligible(chronic)).toBe(true);
+    expect(isConcessionaireDisconnectionEligible(chronic, NOW)).toBe(true);
   });
 
   it("is not eligible inside the grace period", () => {
     const recent = { billingBalance: 208, totalBalance: 208, delinquentSince: daysAgo(5) };
     expect(isPastGracePeriod(concessionaireDaysOverdue(recent, NOW))).toBe(false);
-    expect(isConcessionaireDisconnectionEligible(recent)).toBe(false);
+    expect(isConcessionaireDisconnectionEligible(recent, NOW)).toBe(false);
   });
 
   it("crosses the thresholds on the documented days", () => {
@@ -258,7 +258,7 @@ describe("disconnection eligibility", () => {
   });
 });
 
-// ── Payment allocation ───────────────────────────────────────────────────────
+// â”€â”€ Payment allocation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 describe("applyPaymentToHistory", () => {
   const history = [
@@ -314,7 +314,7 @@ describe("reversePaymentInHistory", () => {
   });
 });
 
-// ── Mobile sync ──────────────────────────────────────────────────────────────
+// â”€â”€ Mobile sync â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 describe("isPendingSync", () => {
   const assigned = {
@@ -360,7 +360,7 @@ describe("isPendingSync", () => {
   });
 });
 
-// ── Account approval ─────────────────────────────────────────────────────────
+// â”€â”€ Account approval â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 describe("isAccountApproved", () => {
   it("treats accounts that predate approval as approved", () => {

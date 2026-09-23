@@ -19,14 +19,26 @@ export const APP_VERSION = "2.4.1";
 
 export const COPYRIGHT_YEAR = 2026;
 
-/** Who the software belongs to. Answered by the office, not assumed here. */
-export const COPYRIGHT_HOLDER = SYSTEM_NAME;
+/**
+ * Who the software belongs to: the company that built it, not the office that
+ * uses it. The records the console holds are the office's; the software is
+ * Sysware's.
+ */
+export const COMPANY_NAME = "Sysware";
+export const COMPANY_FULL_NAME = "Sysware Computer Sales & Services";
+export const COPYRIGHT_HOLDER = COMPANY_FULL_NAME;
 
-export const DEVELOPER = {
-  name: "Aljohn Arranguez",
-  email: "arranguez.aljohn0130@gmail.com",
-  phone: "+63 953 538 3369",
-} as const;
+export interface Developer {
+  name: string;
+  email: string;
+  phone: string;
+}
+
+/** Who to reach when the console itself is at fault. */
+export const DEVELOPERS: readonly Developer[] = [
+  { name: "Melvin", email: "piolo.melvin17@gmail.com", phone: "0906 780 7028" },
+  { name: "Aljohn Arranguez", email: "arranguez.aljohn0130@gmail.com", phone: "+63 953 538 3369" },
+];
 
 export interface OpenSourceComponent {
   name: string;

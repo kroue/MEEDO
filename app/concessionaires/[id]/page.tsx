@@ -1,12 +1,23 @@
 "use client";
 
 import { userMessage } from "@/lib/userMessage";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useSyncExternalStore } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, Edit, Loader2, AlertCircle, FileText, CheckCircle2, XCircle, Plug, Truck } from "lucide-react";
+import {
+  ArrowLeft,
+  Edit,
+  Loader2,
+  AlertCircle,
+  FileText,
+  CheckCircle2,
+  XCircle,
+  Plug,
+  RotateCcw,
+  Truck,
+} from "lucide-react";
 import { useConcessionaire } from "@/lib/firebase/useConcessionaires";
-import { addRemark } from "@/lib/firebase/concessionaires";
+import { addRemark, resubmitConcessionaire } from "@/lib/firebase/concessionaires";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ConcessionaireDialog } from "@/components/ConcessionaireDialog";
@@ -31,6 +42,23 @@ export default function ConcessionaireDetailsPage() {
   const [remarkError, setRemarkError] = useState<string | null>(null);
   const [reconnectOpen, setReconnectOpen] = useState(false);
   const [openRequests, setOpenRequests] = useState<ServiceRequest[]>([]);
+  const [resubmitting, setResubmitting] = useState(false);
+  const [resubmitError, setResubmitError] = useState<string | null>(null);
+
+  // Where the back arrow goes. Opened from the approval queue, it goes back
+  // there rather than dropping the admin into the full account list, which is
+  // what the queue's links carry ?from=approvals for.
+  //
+  // Read from the address bar rather than with useSearchParams, which forces
+  // the whole page behind a Suspense boundary at build time for one string.
+  const backHref = useSyncExternalStore(
+    () => () => {},
+    () =>
+      new URLSearchParams(window.location.search).get("from") === "approvals"
+        ? "/approvals"
+        : "/concessionaires",
+    () => "/concessionaires"
+  );
 
   useEffect(() => {
     if (!id) return;
@@ -109,12 +137,34 @@ export default function ConcessionaireDetailsPage() {
 
   const { requirements } = concessionaire;
 
+  // An account an admin hasn't approved isn't an account yet: it can't be
+  // edited, connected, billed or take payments. A rejected one can still be
+  // corrected, which is what re-submitting it is for.
+  const pendingApproval = concessionaire.approvalStatus === "PENDING";
+  const rejected = concessionaire.approvalStatus === "REJECTED";
+  const awaitingDecision = pendingApproval || rejected;
+  const mayResubmit =
+    rejected && (role === "admin" || concessionaire.approvalRequestedBy === user?.email);
+
+  async function handleResubmit() {
+    setResubmitting(true);
+    setResubmitError(null);
+    try {
+      await resubmitConcessionaire(id, user?.email ?? "");
+      refresh();
+    } catch (e) {
+      setResubmitError(userMessage(e, "Couldn't re-submit this account."));
+    } finally {
+      setResubmitting(false);
+    }
+  }
+
   return (
     <div className="p-4 md:p-8 space-y-6 max-w-5xl mx-auto">
       {/* Header & Actions */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex items-center gap-4">
-          <Link href="/concessionaires">
+          <Link href={backHref} aria-label="Back">
             <Button variant="outline" size="icon" className="h-10 w-10 rounded-xl shrink-0">
               <ArrowLeft className="h-4 w-4 text-slate-600" />
             </Button>
@@ -129,13 +179,15 @@ export default function ConcessionaireDetailsPage() {
           </div>
         </div>
         <div className="flex gap-2 items-center">
-          <Link href={`/connections/${concessionaire.id}`}>
-            <Button variant="outline" className="bg-white border-slate-200 text-slate-700 hover:bg-slate-50 font-semibold shadow-sm">
-              <Plug className="h-4 w-4 mr-2 text-sky-500" />
-              View Connection
-            </Button>
-          </Link>
-          {canEdit && (
+          {!awaitingDecision && (
+            <Link href={`/connections/${concessionaire.id}`}>
+              <Button variant="outline" className="bg-white border-slate-200 text-slate-700 hover:bg-slate-50 font-semibold shadow-sm">
+                <Plug className="h-4 w-4 mr-2 text-sky-500" />
+                View Connection
+              </Button>
+            </Link>
+          )}
+          {canEdit && !pendingApproval && (
             <Button
               className="bg-sky-600 hover:bg-sky-700 text-white font-semibold shadow-sm"
               onClick={() => setEditOpen(true)}
@@ -146,6 +198,49 @@ export default function ConcessionaireDetailsPage() {
           )}
         </div>
       </div>
+
+      {/* Nothing may be done to an account an admin hasn't decided on — so the
+          page says so plainly rather than offering buttons that would fail. */}
+      {awaitingDecision && (
+        <div
+          className={`rounded-2xl border p-4 ${
+            pendingApproval ? "border-amber-200 bg-amber-50" : "border-red-200 bg-red-50"
+          }`}
+        >
+          <p className={`text-sm font-semibold ${pendingApproval ? "text-amber-900" : "text-red-900"}`}>
+            {pendingApproval ? "Waiting for an admin's approval" : "This request was rejected"}
+          </p>
+          <p className={`mt-1 text-sm ${pendingApproval ? "text-amber-800" : "text-red-800"}`}>
+            {pendingApproval
+              ? "Until an admin approves it, this account can't be edited, connected, assigned for reading, billed, or take payments."
+              : concessionaire.approvalRejectionReason ||
+                "An admin sent this back. Fix what they asked for and submit it again."}
+          </p>
+          {rejected && (
+            <p className="mt-1 text-xs text-red-700">
+              Correct the details, then re-submit it. Nothing else can be done with it until an
+              admin approves it.
+            </p>
+          )}
+          {resubmitError && (
+            <p className="mt-2 text-xs font-medium text-red-700">{resubmitError}</p>
+          )}
+          {mayResubmit && (
+            <Button
+              className="mt-3 bg-slate-900 text-white hover:bg-slate-800"
+              disabled={resubmitting}
+              onClick={handleResubmit}
+            >
+              {resubmitting ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <RotateCcw className="mr-2 h-4 w-4" />
+              )}
+              Re-submit for approval
+            </Button>
+          )}
+        </div>
+      )}
 
       {/* Main Content Grid */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
