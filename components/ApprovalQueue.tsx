@@ -24,6 +24,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import {
   Dialog,
   DialogContent,
@@ -124,6 +125,9 @@ export function ApprovalQueue({ onChanged }: { onChanged?: () => void }) {
 
   /** Which request is opened out to show everything it was submitted with. */
   const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  /** Approving creates a live, billable account, so it is confirmed first. */
+  const [approveTarget, setApproveTarget] = useState<Concessionaire | null>(null);
 
   useEffect(
     () =>
@@ -295,7 +299,7 @@ export function ApprovalQueue({ onChanged }: { onChanged?: () => void }) {
                       size="sm"
                       className="h-8 bg-emerald-600 text-xs font-semibold text-white hover:bg-emerald-700"
                       disabled={busyId !== null}
-                      onClick={() => approve(a)}
+                      onClick={() => setApproveTarget(a)}
                     >
                       {busyId === a.id ? (
                         <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
@@ -363,6 +367,31 @@ export function ApprovalQueue({ onChanged }: { onChanged?: () => void }) {
           </div>
         )}
       </CardContent>
+
+      <ConfirmDialog
+        open={approveTarget !== null}
+        onOpenChange={(open) => !open && setApproveTarget(null)}
+        title={`Approve ${approveTarget ? getFullName(approveTarget) : ""}?`}
+        description="It becomes a live account: it can be put on a reading route, billed, and take payments. Its account number is assigned now."
+        confirmLabel="Approve account"
+        busy={busyId !== null}
+        onConfirm={() => {
+          const target = approveTarget;
+          setApproveTarget(null);
+          if (target) approve(target);
+        }}
+      >
+        {approveTarget && (
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+            <p>
+              Meter <span className="font-mono font-semibold text-slate-800">{approveTarget.meterNumber}</span>
+              {" · "}
+              {approveTarget.barangay}, Purok {approveTarget.purok}
+            </p>
+            <p className="mt-1">Requested by {approveTarget.approvalRequestedBy || "unknown"}</p>
+          </div>
+        )}
+      </ConfirmDialog>
 
       <Dialog open={rejectTarget !== null} onOpenChange={(open) => !open && setRejectTarget(null)}>
         <DialogContent className="sm:max-w-md">

@@ -27,6 +27,7 @@ import {
   subscribeToServiceRequests,
 } from "@/lib/firebase/requests";
 import type { ServiceRequest, ServiceRequestKind } from "@/lib/firebase/types";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { formatPeso } from "@/lib/utils";
 import {
   Card,
@@ -192,6 +193,9 @@ export function ServiceRequestQueue({ onChanged }: { onChanged?: () => void }) {
   const [rejectError, setRejectError] = useState<string | null>(null);
   const [rejecting, setRejecting] = useState(false);
 
+  /** Approving moves money or sends a crew, so it is confirmed first. */
+  const [approveTarget, setApproveTarget] = useState<ServiceRequest | null>(null);
+
   useEffect(() => {
     if (!role) return;
     const onError = (e: Error) => setLoadError(userMessage(e, "Couldn't load the request queue."));
@@ -312,13 +316,9 @@ export function ServiceRequestQueue({ onChanged }: { onChanged?: () => void }) {
                         size="sm"
                         className="bg-emerald-600 text-white hover:bg-emerald-700"
                         disabled={busyId === request.id}
-                        onClick={() =>
-                          run(
-                            request.id,
-                            () => approveRequest(request.id, email),
-                            "Couldn't approve that request."
-                          )
-                        }
+                        // Approving posts the money (or sends a crew), so it is
+                        // confirmed against the account and amount first.
+                        onClick={() => setApproveTarget(request)}
                       >
                         {busyId === request.id ? (
                           <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
@@ -410,6 +410,39 @@ export function ServiceRequestQueue({ onChanged }: { onChanged?: () => void }) {
           )}
         </CardContent>
       </Card>
+
+      <ConfirmDialog
+        open={approveTarget !== null}
+        onOpenChange={(open) => !open && setApproveTarget(null)}
+        title={approveTarget ? `${REQUEST_KIND_LABELS[approveTarget.kind]}?` : ""}
+        description={
+          approveTarget?.kind === "RECONNECTION"
+            ? "The ₱200 is already collected. Approving sends a crew; you confirm the line separately once it is back on."
+            : "This posts against the account as soon as you approve it, and undoing it means voiding the entry."
+        }
+        confirmLabel={approveTarget?.kind === "RECONNECTION" ? "Approve & send crew" : "Approve"}
+        busy={busyId === approveTarget?.id}
+        onConfirm={() => {
+          const target = approveTarget;
+          setApproveTarget(null);
+          if (target) {
+            run(target.id, () => approveRequest(target.id, email), "Couldn't approve that request.");
+          }
+        }}
+      >
+        {approveTarget && (
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+            <p className="text-sm font-semibold text-slate-900">
+              {approveTarget.concessionaireName || "Unnamed account"}
+              {approveTarget.amount ? ` — ${formatPeso(approveTarget.amount)}` : ""}
+            </p>
+            <p className="mt-1">
+              {approveTarget.orNumber ? `OR ${approveTarget.orNumber} · ` : ""}
+              Submitted by {approveTarget.requestedBy}
+            </p>
+          </div>
+        )}
+      </ConfirmDialog>
 
       <Dialog open={rejectTarget !== null} onOpenChange={(open) => !open && setRejectTarget(null)}>
         <DialogContent className="sm:max-w-md">

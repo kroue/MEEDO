@@ -1,6 +1,13 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
+import {
+  clearFailures,
+  describeWait,
+  recordFailure,
+  recordFor,
+  waitRemaining,
+} from "@/lib/loginThrottle";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { login, NotAuthorizedError } from "@/lib/firebase/auth";
@@ -37,17 +44,35 @@ export default function LoginPage() {
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
+
+    // A run of failed attempts from this browser has to wait before the next
+    // one — see lib/loginThrottle.ts.
+    const waiting = waitRemaining(recordFor(email), Date.now());
+    if (waiting > 0) {
+      setError(
+        `Too many failed attempts. Try again in ${describeWait(waiting)}, or ask an admin to reset the password.`
+      );
+      return;
+    }
+
     setError(null);
     setSubmitting(true);
     try {
       const role = await login(email.trim(), password);
+      clearFailures(email);
       router.replace(role === "admin" ? "/" : "/concessionaires");
     } catch (err) {
+      const record = recordFailure(email);
+      const wait = waitRemaining(record, Date.now());
       if (err instanceof NotAuthorizedError) {
         setError(err.message);
       } else {
         const code = (err as { code?: string })?.code ?? "";
-        setError(friendlyAuthError(code));
+        setError(
+          wait > 0
+            ? `${friendlyAuthError(code)} Too many attempts — try again in ${describeWait(wait)}.`
+            : friendlyAuthError(code)
+        );
       }
     } finally {
       setSubmitting(false);
