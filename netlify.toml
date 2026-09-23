@@ -21,6 +21,17 @@
   # change showing up in a diff first.
   NODE_VERSION = "24"
 
+  # Netlify fails a build when it finds an environment value in the output.
+  # These seven are the public web config: Next inlines anything named
+  # NEXT_PUBLIC_* into the browser bundle deliberately, and the console cannot
+  # reach the database without them, so finding them there is the build
+  # working rather than leaking. What keeps records safe is the security
+  # rules, not the secrecy of these.
+  #
+  # Named one by one rather than switching the scan off, so that a real
+  # credential added later is still caught.
+  SECRETS_SCAN_OMIT_KEYS = "NEXT_PUBLIC_FIREBASE_API_KEY,NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,NEXT_PUBLIC_FIREBASE_PROJECT_ID,NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,NEXT_PUBLIC_FIREBASE_APP_ID,NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID"
+
 # Deliberately left unpinned: Netlify maintain this against every Next release,
 # and pinning it is how a project ends up on an adapter older than the Next
 # version in package.json.
