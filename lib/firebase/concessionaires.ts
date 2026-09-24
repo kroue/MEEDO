@@ -29,7 +29,7 @@ import {
 import { db } from "./firebase";
 import { logAuditEvent } from "./auditLog";
 import { monthKeyFor, ownerFieldsOf } from "./bills";
-import { sortHistoryDesc, waterChargeOf } from "../billing";
+import { isAccountApproved, sortHistoryDesc, waterChargeOf } from "../billing";
 import { DuplicateOrNumberError, requireOrNumber } from "../receipts";
 import { reserveAccountNumber, reserveAccountNumbers } from "./accountNumbers";
 import { getFullName } from "../utils";
@@ -488,6 +488,16 @@ export async function updateConnectionFeeDetails(
     if (!snapshot.exists()) throw new Error("Concessionaire not found.");
 
     const data = snapshot.data() as Concessionaire;
+    // An account an admin hasn't approved isn't established yet — nothing
+    // creates a connection fee balance for it. Checked inside the transaction
+    // rather than only in the page, so this holds however the write is
+    // reached: a staff member's request being applied, or an admin posting
+    // directly.
+    if (!isAccountApproved(data)) {
+      throw new ApprovalStateError(
+        "This account hasn't been approved yet, so it has no connection to set up."
+      );
+    }
     const paidSoFar = (data.meterPayments ?? []).reduce(
       (sum, p) => (p.voided ? sum : sum + p.amount),
       0
@@ -561,6 +571,13 @@ export async function addMeterPayment(
     if (!snapshot.exists()) throw new Error("Concessionaire not found.");
 
     const data = snapshot.data();
+    // Same as updateConnectionFeeDetails: an unapproved account has no
+    // connection to take a payment against.
+    if (!isAccountApproved(data)) {
+      throw new ApprovalStateError(
+        "This account hasn't been approved yet, so it has no connection fee to pay."
+      );
+    }
     const waterMeterBalance: number = data.waterMeterBalance ?? 0;
     const billingBalance: number = data.billingBalance ?? 0;
     const meterPayments = (data.meterPayments ?? []) as import("./types").MeterPayment[];

@@ -42,7 +42,7 @@ import { logAuditEvent } from "./auditLog";
 import { addMeterPayment, updateConnectionFeeDetails } from "./concessionaires";
 import { recordPayment } from "./payments";
 import { requireOrNumber } from "../receipts";
-import { RECONNECTION_FEE, isAwaitingFirstConnection } from "../billing";
+import { RECONNECTION_FEE, isAccountApproved, isAwaitingFirstConnection } from "../billing";
 import { formatPeso, getFullName } from "../utils";
 import type {
   Concessionaire,
@@ -163,6 +163,11 @@ export async function submitConnectionPaymentRequest(
   input: { amount: number; orNumber: string; slot: string; note?: string },
   actorEmail: string
 ): Promise<string> {
+  if (!isAccountApproved(concessionaire)) {
+    throw new RequestStateError(
+      "This account hasn't been approved yet, so it has no connection fee to pay."
+    );
+  }
   return submit({
     kind: "CONNECTION_PAYMENT",
     status: "PENDING",
@@ -181,6 +186,11 @@ export async function submitConnectionSetupRequest(
   input: { connectionFeeDetails: ConnectionFeeDetails; note?: string },
   actorEmail: string
 ): Promise<string> {
+  if (!isAccountApproved(concessionaire)) {
+    throw new RequestStateError(
+      "This account hasn't been approved yet, so it isn't established enough to have a connection."
+    );
+  }
   return submit({
     kind: "CONNECTION_SETUP",
     status: "PENDING",

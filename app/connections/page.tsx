@@ -31,6 +31,7 @@ import {
   Plus,
 } from "lucide-react";
 import { useConcessionaires } from "@/lib/firebase/useConcessionaires";
+import { isAccountApproved } from "@/lib/billing";
 import {
   BARANGAYS,
   type Concessionaire,
@@ -54,6 +55,16 @@ function SkeletonRow() {
 }
 
 function ConnectionStatusBadge({ concessionaire }: { concessionaire: Concessionaire }) {
+  // An unapproved account has nothing to show here — say so instead of
+  // "Not Applied", which reads as something staff still need to do.
+  if (!isAccountApproved(concessionaire)) {
+    return concessionaire.approvalStatus === "REJECTED" ? (
+      <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50">Rejected</Badge>
+    ) : (
+      <Badge variant="outline" className="text-amber-600 border-amber-200 bg-amber-50">Awaiting Approval</Badge>
+    );
+  }
+
   if (!concessionaire.connectionFeeDetails) {
     return <Badge variant="secondary" className="bg-slate-100 text-slate-500 hover:bg-slate-200">Not Applied</Badge>;
   }
@@ -74,10 +85,14 @@ function ConnectionStatusBadge({ concessionaire }: { concessionaire: Concessiona
 
 function ConcessionaireRow({ concessionaire }: { concessionaire: Concessionaire }) {
   const router = useRouter();
+  // Still clickable — it lands on a page that explains why nothing can be
+  // done there rather than a dead end — but dimmed so staff aren't drawn to
+  // rows that can't go anywhere yet.
+  const awaitingDecision = !isAccountApproved(concessionaire);
 
   return (
     <TableRow
-      className="group transition-colors hover:bg-sky-50/60 cursor-pointer"
+      className={`group transition-colors hover:bg-sky-50/60 cursor-pointer ${awaitingDecision ? "opacity-60" : ""}`}
       onClick={() => router.push(`/connections/${concessionaire.id}`)}
     >
       <TableCell>

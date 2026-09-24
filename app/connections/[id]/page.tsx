@@ -23,6 +23,7 @@ import {
   submitConnectionSetupRequest,
 } from "@/lib/firebase/requests";
 import { orNumberProblem } from "@/lib/receipts";
+import { isAccountApproved } from "@/lib/billing";
 import type { ServiceRequest } from "@/lib/firebase/types";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -155,6 +156,39 @@ export default function ConnectionDetailsPage() {
             <ArrowLeft className="h-4 w-4 mr-2" />
             Back to Connections
           </Button>
+        </div>
+      </div>
+    );
+  }
+
+  // An account an admin hasn't approved isn't established yet: it has no
+  // connection to set up or take payment on. Matches the same rule on the
+  // concessionaire's own page — enforced there too, in lib/firebase/
+  // concessionaires.ts and requests.ts, since a staff member can land here
+  // straight from the Connections list rather than through that page.
+  if (!isAccountApproved(concessionaire)) {
+    const rejected = concessionaire.approvalStatus === "REJECTED";
+    return (
+      <div className="p-4 md:p-8 max-w-2xl mx-auto space-y-4">
+        <Link href="/connections">
+          <Button variant="outline" size="icon" className="h-10 w-10 rounded-xl">
+            <ArrowLeft className="h-4 w-4 text-slate-600" />
+          </Button>
+        </Link>
+        <div className={`rounded-2xl border p-6 ${rejected ? "border-red-200 bg-red-50" : "border-amber-200 bg-amber-50"}`}>
+          <h2 className={`text-lg font-bold ${rejected ? "text-red-700" : "text-amber-800"}`}>
+            {getFullName(concessionaire)} isn&apos;t approved yet
+          </h2>
+          <p className={`mt-1 text-sm ${rejected ? "text-red-700" : "text-amber-700"}`}>
+            {rejected
+              ? "An admin rejected this account. Fix what they asked for and re-submit it before it can have a connection."
+              : "This account is still waiting for an admin's approval. Nothing can be connected, billed, or paid until then."}
+          </p>
+          <Link href={`/concessionaires/${concessionaire.id}`} className="mt-4 inline-block">
+            <Button variant="outline" className="bg-white">
+              View this account
+            </Button>
+          </Link>
         </div>
       </div>
     );
