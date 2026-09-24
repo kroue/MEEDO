@@ -147,6 +147,13 @@ function RequestRow({
           {request.barangay ? ` · ${request.barangay === "CG" ? "Cebuano Group" : request.barangay}` : ""}
         </p>
 
+        {request.cashTendered && request.amount && request.cashTendered > request.amount ? (
+          <p className="text-xs text-slate-500">
+            Cash received {formatPeso(request.cashTendered)} · change given{" "}
+            {formatPeso(request.cashTendered - request.amount)}
+          </p>
+        ) : null}
+
         <p className="text-xs text-slate-500">
           {request.orNumber ? `OR ${request.orNumber} · ` : ""}
           {request.slot ? `${request.slot} installment · ` : ""}

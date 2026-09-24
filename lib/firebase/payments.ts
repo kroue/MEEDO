@@ -12,10 +12,12 @@
  *
  * Two behaviours worth knowing about:
  *
- *  - Overpayment is accepted. Anything beyond what's owed becomes
- *    `creditBalance`, which the mobile app draws down against the next bill.
- *    Refusing advance payments left the cashier with no legitimate option
- *    when someone wanted to pay ahead.
+ *  - A payment never exceeds the balance due. The office holds no advance
+ *    credit: cash handed over beyond what is owed goes back as change, and
+ *    the receipt records both the cash received and the change given so the
+ *    drawer reconciles. Credit left on accounts from before this rule is
+ *    still honoured — the mobile app takes it off the next bill — but nothing
+ *    here adds to it any more.
  *
  *  - Payments are voided, never deleted. A cash receipt that was physically
  *    issued stays in the ledger marked `voided`, so the OR number remains
@@ -80,21 +82,33 @@ function toCentavos(value: number): number {
  * `options.approvedBy` records the admin who released a staff member's
  * payment from the approval queue; `actorEmail` stays whoever took the cash.
  *
- * Any amount beyond the outstanding balance is accepted and held as advance
- * credit on the account. Throws [InvalidPaymentAmountError] only if `amount`
- * is not a positive number.
+ * `amount` is what goes against the bill and may not exceed the balance due —
+ * that is refused with [InvalidPaymentAmountError], checked inside the
+ * transaction against the balance as it stands then. `options.cashTendered`
+ * is the cash actually handed over; when it is more than `amount`, the
+ * difference is recorded as the change given back (see splitCashPayment).
  */
 export async function recordPayment(
   concessionaireId: string,
   rawAmount: number,
   rawOrNumber: string,
   actorEmail: string,
-  options: { approvedBy?: string } = {}
+  options: { approvedBy?: string; cashTendered?: number } = {}
 ): Promise<PaymentRecord> {
   const amount = toCentavos(rawAmount);
   if (!(amount > 0) || !Number.isFinite(amount)) {
     throw new InvalidPaymentAmountError("Payment amount must be greater than zero.");
   }
+  const cashTendered =
+    options.cashTendered !== undefined && Number.isFinite(options.cashTendered)
+      ? toCentavos(options.cashTendered)
+      : amount;
+  if (cashTendered < amount) {
+    throw new InvalidPaymentAmountError(
+      `The cash received (₱${cashTendered.toFixed(2)}) is less than the payment (₱${amount.toFixed(2)}).`
+    );
+  }
+  const changeGiven = toCentavos(cashTendered - amount);
   const orNumber = requireOrNumber(rawOrNumber);
 
   const docRef = doc(db, CONCESSIONAIRES_COLLECTION, concessionaireId);
@@ -131,15 +145,26 @@ export async function recordPayment(
       const concessionaireName = getFullName(data);
       const outstandingBalance: number = data.billingBalance ?? 0;
       const waterMeterBalance: number = data.waterMeterBalance ?? 0;
-      const existingCredit: number = data.creditBalance ?? 0;
       const billingHistory = existingBills;
 
-      const appliedToBalance = toCentavos(Math.min(amount, outstandingBalance));
-      const creditedAmount = toCentavos(amount - appliedToBalance);
+      // No advance credit: the payment is capped at what is owed right now.
+      // Checked here, against the balance inside the transaction, because a
+      // staff request can sit in the queue while another payment lands.
+      if (outstandingBalance <= 0) {
+        throw new InvalidPaymentAmountError(
+          "Nothing is owed on this account, so there is no payment to record. Give the money back."
+        );
+      }
+      if (amount > outstandingBalance) {
+        throw new InvalidPaymentAmountError(
+          `₱${amount.toFixed(2)} is more than the ₱${outstandingBalance.toFixed(2)} balance due. ` +
+            `Record ₱${outstandingBalance.toFixed(2)} and give the rest back as change.`
+        );
+      }
 
       const { updatedHistory, fullyPaid } = applyPaymentToHistory(
         billingHistory,
-        appliedToBalance,
+        amount,
         outstandingBalance
       );
 
@@ -149,8 +174,7 @@ export async function recordPayment(
         (b) => (paidBefore.get(b.month) ?? 0) !== (b.amountPaid ?? 0)
       );
 
-      const newBillingBalance = fullyPaid ? 0 : toCentavos(outstandingBalance - appliedToBalance);
-      const newCreditBalance = toCentavos(existingCredit + creditedAmount);
+      const newBillingBalance = fullyPaid ? 0 : toCentavos(outstandingBalance - amount);
       const newTotalBalance = toCentavos(newBillingBalance + waterMeterBalance);
 
       const paymentRecord: PaymentRecord = {
@@ -160,8 +184,8 @@ export async function recordPayment(
         recordedBy: actorEmail,
         balanceBefore: outstandingBalance,
         balanceAfter: newBillingBalance,
-        appliedToBalance,
-        creditedAmount,
+        appliedToBalance: amount,
+        ...(changeGiven > 0 ? { cashTendered, changeGiven } : {}),
         ...(options.approvedBy ? { approvedBy: options.approvedBy } : {}),
       };
 
@@ -187,7 +211,6 @@ export async function recordPayment(
 
       transaction.update(docRef, {
         billingBalance: newBillingBalance,
-        creditBalance: newCreditBalance,
         totalBalance: newTotalBalance,
         billingSummary: summary,
         // Balance cleared — the delinquency clock stops. A later bill starts a
@@ -201,13 +224,12 @@ export async function recordPayment(
     }
   );
 
-  const creditNote =
-    paymentRecord.creditedAmount && paymentRecord.creditedAmount > 0
-      ? ` ₱${paymentRecord.creditedAmount.toFixed(2)} held as advance credit.`
-      : "";
+  const changeNote = paymentRecord.changeGiven
+    ? ` Cash ₱${paymentRecord.cashTendered?.toFixed(2)}, change ₱${paymentRecord.changeGiven.toFixed(2)}.`
+    : "";
   logAuditEvent(
     "Payment",
-    `Recorded water bill payment of ₱${paymentRecord.amount.toFixed(2)} for ${concessionaireName || concessionaireId}. OR ${paymentRecord.orNumber}.${creditNote}`,
+    `Recorded water bill payment of ₱${paymentRecord.amount.toFixed(2)} for ${concessionaireName || concessionaireId}. OR ${paymentRecord.orNumber}.${changeNote}`,
     actorEmail
   );
 

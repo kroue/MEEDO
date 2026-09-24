@@ -312,6 +312,27 @@ export function isAccountApproved(c: { approvalStatus?: string | null }): boolea
   return c.approvalStatus === undefined || c.approvalStatus === null || c.approvalStatus === "APPROVED";
 }
 
+// ── Cash at the counter ──────────────────────────────────────────────────
+
+/**
+ * Splits the cash a concessionaire hands over into the payment recorded
+ * against their water bill and the change handed back.
+ *
+ * The office holds no advance credit: whatever is over the balance due goes
+ * back across the counter, so the payment on the books never exceeds what was
+ * owed. With nothing owed, the whole amount is change.
+ */
+export function splitCashPayment(
+  cashReceived: number,
+  balanceDue: number
+): { amount: number; change: number } {
+  const cash = Number.isFinite(cashReceived) ? Math.max(0, cashReceived) : 0;
+  const due = Number.isFinite(balanceDue) ? Math.max(0, balanceDue) : 0;
+  const amount = Math.round(Math.min(cash, due) * 100) / 100;
+  const change = Math.round((cash - amount) * 100) / 100;
+  return { amount, change };
+}
+
 // ── Applying a payment to billing history ────────────────────────────────
 //
 // `billingBalance` (on the concessionaire doc) is the single running total

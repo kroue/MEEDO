@@ -218,6 +218,21 @@ export function PaymentReceipt({ concessionaireId, orNumber }: { concessionaireI
           <p className="text-xs font-bold uppercase text-slate-500">
             Balance After: <span className="ml-2 text-slate-900">{formatPeso(payment.balanceAfter)}</span>
           </p>
+          {/* Only when more cash was handed over than was owed: the rest went
+              back as change, and the receipt says so for the drawer count. */}
+          {payment.changeGiven ? (
+            <>
+              <p className="text-xs font-bold uppercase text-slate-500">
+                Cash Received:{" "}
+                <span className="ml-2 text-slate-900">
+                  {formatPeso(payment.cashTendered ?? payment.amount)}
+                </span>
+              </p>
+              <p className="text-xs font-bold uppercase text-slate-500">
+                Change: <span className="ml-2 text-slate-900">{formatPeso(payment.changeGiven)}</span>
+              </p>
+            </>
+          ) : null}
         </div>
         <div className="text-right">
           <p className="mb-1 text-xs font-bold uppercase text-slate-500">Amount Paid</p>

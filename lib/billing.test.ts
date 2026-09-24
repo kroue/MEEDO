@@ -27,6 +27,7 @@ import {
   paymentStatus,
   reversePaymentInHistory,
   sortHistoryAsc,
+  splitCashPayment,
   totalWaterCharge,
   waterChargeOf,
 } from "./billing";
@@ -442,5 +443,33 @@ describe("never connected vs disconnected", () => {
   it("never offers reconnection for a line already connected or dropped", () => {
     expect(canRequestReconnection({ status: "CONNECTED" })).toBe(false);
     expect(canRequestReconnection({ status: "DROPPED", connectionFeeDetails: { total: 1 } })).toBe(false);
+  });
+});
+
+describe("cash at the counter", () => {
+  it("records only the balance due and hands the rest back as change", () => {
+    // The payment that prompted this: ₱700 handed over against ₱522.30.
+    expect(splitCashPayment(700, 522.3)).toEqual({ amount: 522.3, change: 177.7 });
+  });
+
+  it("gives no change when the exact balance is paid", () => {
+    expect(splitCashPayment(522.3, 522.3)).toEqual({ amount: 522.3, change: 0 });
+  });
+
+  it("records a partial payment in full when the cash is short of the balance", () => {
+    expect(splitCashPayment(300, 522.3)).toEqual({ amount: 300, change: 0 });
+  });
+
+  it("records nothing when nothing is owed — all of it is change", () => {
+    expect(splitCashPayment(500, 0)).toEqual({ amount: 0, change: 500 });
+  });
+
+  it("keeps centavos exact where floating point would drift", () => {
+    expect(splitCashPayment(1000, 876.45)).toEqual({ amount: 876.45, change: 123.55 });
+  });
+
+  it("treats blank or negative entries as no cash rather than a negative payment", () => {
+    expect(splitCashPayment(Number.NaN, 522.3)).toEqual({ amount: 0, change: 0 });
+    expect(splitCashPayment(-50, 522.3)).toEqual({ amount: 0, change: 0 });
   });
 });

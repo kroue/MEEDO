@@ -16,7 +16,13 @@ import { subscribeToBills, subscribeToRecentPayments } from "@/lib/firebase/bill
 import type { MonthlyBillingRecord, PaymentDocument, ServiceRequest } from "@/lib/firebase/types";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { getFullName, formatPeso } from "@/lib/utils";
-import { isAccountApproved, sortHistoryAsc, paymentStatus, PAYMENT_STATUS_STYLES } from "@/lib/billing";
+import {
+  isAccountApproved,
+  sortHistoryAsc,
+  paymentStatus,
+  PAYMENT_STATUS_STYLES,
+  splitCashPayment,
+} from "@/lib/billing";
 import type { Concessionaire, PaymentRecord } from "@/lib/firebase/types";
 import {
   Card,
@@ -160,20 +166,24 @@ export default function CollectionsPage() {
   const pendingForAccount =
     accountRequests.id === selectedId ? accountRequests.rows : [];
 
-  const amountEntered = parseFloat(paymentAmount);
-  const advanceAmount =
-    selected && amountEntered > selected.billingBalance
-      ? amountEntered - selected.billingBalance
-      : 0;
+  // What the cashier types is the cash handed over. The office keeps no
+  // advance credit, so only the balance due is recorded and the rest is
+  // change — worked out here so it is on screen before anyone presses record.
+  const balanceDue = selected?.billingBalance ?? 0;
+  const cashReceived = parseFloat(paymentAmount);
+  const { amount: amountToRecord, change } = splitCashPayment(cashReceived, balanceDue);
 
   async function handleProcessPayment() {
     if (!selected) return;
-    const amount = parseFloat(paymentAmount);
     setPaymentError(null);
     setRequestNotice(null);
 
-    if (!(amount > 0)) {
-      setPaymentError("Enter a valid payment amount.");
+    if (balanceDue <= 0) {
+      setPaymentError("Nothing is owed on this account, so there is no payment to record.");
+      return;
+    }
+    if (!(amountToRecord > 0)) {
+      setPaymentError("Enter the cash received.");
       return;
     }
     const orProblem = orNumberProblem(paymentOr);
@@ -181,21 +191,24 @@ export default function CollectionsPage() {
       setPaymentError(orProblem);
       return;
     }
-    // Overpayment is accepted — anything beyond the balance is held as
-    // advance credit and drawn down against the next bill. Refusing it left
-    // the cashier with no legitimate way to take money from someone paying
-    // ahead before travelling.
 
     setIsPaying(true);
     try {
       if (canPostDirectly) {
-        const payment = await recordPayment(selected.id, amount, paymentOr, actorEmail);
+        const payment = await recordPayment(selected.id, amountToRecord, paymentOr, actorEmail, {
+          cashTendered: cashReceived,
+        });
         setLastPayment(payment);
         setSuccessOpen(true);
       } else {
-        await submitWaterPaymentRequest(selected, { amount, orNumber: paymentOr }, actorEmail);
+        await submitWaterPaymentRequest(
+          selected,
+          { amount: amountToRecord, orNumber: paymentOr, cashTendered: cashReceived },
+          actorEmail
+        );
         setRequestNotice(
-          `Sent to an admin for approval. The balance changes once it is approved — keep OR ${paymentOr.trim().toUpperCase()} with the receipt.`
+          `Sent to an admin for approval. The balance changes once it is approved — keep OR ${paymentOr.trim().toUpperCase()} with the receipt.` +
+            (change > 0 ? ` Change given: ${formatPeso(change)}.` : "")
         );
       }
       setPaymentAmount("");
@@ -370,7 +383,7 @@ export default function CollectionsPage() {
                   </div>
                 </div>
 
-                <div className="grid gap-3 sm:grid-cols-2">
+                <div className={`grid gap-3 ${(selected.creditBalance ?? 0) > 0 ? "sm:grid-cols-2" : ""}`}>
                   <div className="rounded-lg border border-slate-200 bg-white p-3 text-center">
                     <div className="flex items-center justify-center gap-1 text-slate-400 mb-1">
                       <Banknote className="h-3.5 w-3.5" />
@@ -382,17 +395,23 @@ export default function CollectionsPage() {
                       {formatPeso(selected.billingBalance)}
                     </p>
                   </div>
-                  <div className="rounded-lg border border-slate-200 bg-white p-3 text-center">
-                    <div className="flex items-center justify-center gap-1 text-slate-400 mb-1">
-                      <Wallet className="h-3.5 w-3.5" />
-                      <span className="text-[10px] uppercase tracking-wider font-medium">
-                        Advance Credit
-                      </span>
+                  {/* Advance payments are no longer taken, so this only appears
+                      on an account still carrying credit from before — which
+                      comes off its next bill. */}
+                  {(selected.creditBalance ?? 0) > 0 && (
+                    <div className="rounded-lg border border-slate-200 bg-white p-3 text-center">
+                      <div className="flex items-center justify-center gap-1 text-slate-400 mb-1">
+                        <Wallet className="h-3.5 w-3.5" />
+                        <span className="text-[10px] uppercase tracking-wider font-medium">
+                          Old Credit on Account
+                        </span>
+                      </div>
+                      <p className="text-2xl font-bold text-emerald-600">
+                        {formatPeso(selected.creditBalance ?? 0)}
+                      </p>
+                      <p className="mt-1 text-[11px] text-slate-500">Taken off the next bill</p>
                     </div>
-                    <p className="text-2xl font-bold text-emerald-600">
-                      {formatPeso(selected.creditBalance ?? 0)}
-                    </p>
-                  </div>
+                  )}
                 </div>
 
                 {unpaidHistory.length > 0 && (
@@ -470,23 +489,48 @@ export default function CollectionsPage() {
 
                 <div className="space-y-4">
                   <div className="space-y-1.5">
-                    <Label className="text-xs font-medium text-slate-700">
-                      Amount to Pay (₱) *
+                    <Label htmlFor="cash-received" className="text-xs font-medium text-slate-700">
+                      Cash Received (₱) *
                     </Label>
                     <Input
+                      id="cash-received"
                       type="number"
                       step="0.01"
                       min="0"
                       value={paymentAmount}
                       onChange={(e) => setPaymentAmount(e.target.value)}
                       placeholder="0.00"
+                      disabled={balanceDue <= 0}
                       className="text-sm font-mono text-lg font-semibold"
                     />
-                    {advanceAmount > 0 && (
-                      <p className="text-xs text-emerald-700">
-                        {formatPeso(advanceAmount)} of this is more than the balance due — it will
-                        be held as advance credit and applied to the next bill.
+                    {balanceDue <= 0 ? (
+                      <p className="text-xs text-slate-500">
+                        Nothing is owed on this account, so there is no payment to take.
                       </p>
+                    ) : (
+                      cashReceived > 0 && (
+                        <div className="mt-2 space-y-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
+                          <div className="flex justify-between">
+                            <span className="text-slate-500">Payment recorded</span>
+                            <span className="font-semibold text-slate-800">{formatPeso(amountToRecord)}</span>
+                          </div>
+                          {change > 0 ? (
+                            <div className="flex justify-between border-t border-slate-200 pt-1">
+                              <span className="font-semibold text-slate-700">Change to give back</span>
+                              <span className="text-lg font-bold text-emerald-700">{formatPeso(change)}</span>
+                            </div>
+                          ) : (
+                            amountToRecord < balanceDue && (
+                              <div className="flex justify-between">
+                                <span className="text-slate-500">Still owed after this</span>
+                                <span className="font-medium text-slate-700">
+                                  {formatPeso(balanceDue - amountToRecord)}
+                                </span>
+                              </div>
+                            )
+                          )}
+                        </div>
+                      )
                     )}
                   </div>
 
@@ -514,8 +558,8 @@ export default function CollectionsPage() {
                     onClick={handleProcessPayment}
                     disabled={
                       isPaying ||
-                      !paymentAmount ||
-                      parseFloat(paymentAmount) <= 0 ||
+                      balanceDue <= 0 ||
+                      !(amountToRecord > 0) ||
                       !paymentOr.trim() ||
                       orNumberProblem(paymentOr) !== null
                     }
@@ -745,6 +789,18 @@ export default function CollectionsPage() {
                 <span className="text-slate-500">Amount Paid:</span>
                 <span className="font-bold text-emerald-600">{formatPeso(lastPayment.amount)}</span>
               </div>
+              {lastPayment.changeGiven ? (
+                <>
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Cash Received:</span>
+                    <span className="font-medium text-slate-800">{formatPeso(lastPayment.cashTendered ?? lastPayment.amount)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Change:</span>
+                    <span className="font-bold text-slate-900">{formatPeso(lastPayment.changeGiven)}</span>
+                  </div>
+                </>
+              ) : null}
               <div className="flex justify-between">
                 <span className="text-slate-500">Remaining Balance:</span>
                 <span className="font-medium text-slate-800">{formatPeso(lastPayment.balanceAfter)}</span>

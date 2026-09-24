@@ -152,14 +152,24 @@ export interface PaymentRecord {
   balanceBefore: number;
   balanceAfter: number;
   /**
-   * How much of `amount` went against the outstanding bill. The remainder
-   * (`amount - appliedToBalance`) was an advance and went to `creditBalance`.
-   * Optional because records written before advance payments were supported
-   * always applied the full amount.
+   * How much of `amount` went against the outstanding bill. Equal to `amount`
+   * on every payment recorded now; on older ones the remainder
+   * (`amount - appliedToBalance`) was an advance that went to `creditBalance`.
    */
   appliedToBalance?: number;
-  /** Portion of `amount` held as advance credit rather than settling a bill. */
+  /**
+   * Portion of `amount` held as advance credit. Only on payments recorded
+   * before the office stopped taking advance payments — kept so voiding one
+   * can take its credit back off the account.
+   */
   creditedAmount?: number;
+  /**
+   * The cash handed over, when it was more than `amount`. Absent when the
+   * exact amount was paid.
+   */
+  cashTendered?: number;
+  /** Change given back: `cashTendered - amount`. Absent when there was none. */
+  changeGiven?: number;
   /**
    * Set when this payment has been reversed. The record is never deleted —
    * a cash receipt that was issued stays in the ledger, marked void, so the
@@ -299,9 +309,9 @@ export interface Concessionaire {
   totalBalance: number;
   /**
    * Advance payment held on account, in PHP — money received beyond what was
-   * owed at the time. Always >= 0; `billingBalance` is never negative, so
-   * every existing `billingBalance > 0` check stays correct. The mobile app
-   * draws this down against the next bill it issues.
+   * owed at the time. Nothing creates it any more: overpayment is now given
+   * back as change. What remains on older accounts is still honoured — the
+   * mobile app draws it down against the next bill it issues. Always >= 0.
    */
   creditBalance?: number;
 
@@ -450,6 +460,11 @@ export interface ServiceRequest {
 
   /** Amount involved, for the kinds that move money. */
   amount?: number;
+  /**
+   * For a water payment: the cash handed over, when it was more than
+   * `amount`. The difference was given back as change at the counter.
+   */
+  cashTendered?: number;
   /** Receipt number, typed from the booklet. Never generated. */
   orNumber?: string;
   /** Connection fee installment slot ("1st", "Full", …). */

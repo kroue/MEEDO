@@ -141,16 +141,38 @@ async function submit(request: NewServiceRequest): Promise<string> {
   return created.id;
 }
 
+/**
+ * `amount` is what goes against the bill — never more than the balance due,
+ * since the office keeps no advance credit. `cashTendered` is the cash handed
+ * over when it was more; the change was already given back at the counter,
+ * and is carried through so the receipt can show it.
+ */
 export async function submitWaterPaymentRequest(
   concessionaire: Concessionaire,
-  input: { amount: number; orNumber: string; note?: string },
+  input: { amount: number; orNumber: string; cashTendered?: number; note?: string },
   actorEmail: string
 ): Promise<string> {
+  if (!isAccountApproved(concessionaire)) {
+    throw new RequestStateError("This account hasn't been approved yet, so it can't take payments.");
+  }
+  const balance = concessionaire.billingBalance ?? 0;
+  if (balance <= 0) {
+    throw new RequestStateError("Nothing is owed on this account, so there is no payment to send.");
+  }
+  if (input.amount > balance) {
+    throw new RequestStateError(
+      `${formatPeso(input.amount)} is more than the ${formatPeso(balance)} balance due. ` +
+        `Send ${formatPeso(balance)} and give the rest back as change.`
+    );
+  }
   return submit({
     kind: "WATER_PAYMENT",
     status: "PENDING",
     ...ownerFields(concessionaire),
     amount: input.amount,
+    ...(input.cashTendered !== undefined && input.cashTendered > input.amount
+      ? { cashTendered: input.cashTendered }
+      : {}),
     orNumber: requireOrNumber(input.orNumber),
     ...(input.note?.trim() ? { note: input.note.trim() } : {}),
     requestedBy: actorEmail,
@@ -358,12 +380,12 @@ export async function approveRequest(
       request.amount ?? 0,
       request.orNumber ?? "",
       request.requestedBy,
-      { approvedBy: actorEmail }
+      { approvedBy: actorEmail, cashTendered: request.cashTendered }
     );
     outcome =
       `Posted ${formatPeso(payment.amount)} against the water bill under OR ${payment.orNumber}.` +
-      (payment.creditedAmount && payment.creditedAmount > 0
-        ? ` ${formatPeso(payment.creditedAmount)} held as advance credit.`
+      (payment.changeGiven
+        ? ` ${formatPeso(payment.changeGiven)} was given back as change.`
         : "");
   } else if (request.kind === "CONNECTION_PAYMENT") {
     await addMeterPayment(
