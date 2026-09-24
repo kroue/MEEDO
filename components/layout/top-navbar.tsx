@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useConcessionaires } from "@/lib/firebase/useConcessionaires";
 import { currentMonthStr, isConcessionaireDisconnectionEligible, isPendingSync } from "@/lib/billing";
@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { displayNameFor, logout } from "@/lib/firebase/auth";
+import { personName, subscribeToOwnProfile } from "@/lib/firebase/users";
 import { NotificationsMenu } from "@/components/layout/NotificationsMenu";
 
 function initialsFor(name: string): string {
@@ -46,7 +47,21 @@ export function TopNavbar() {
   // minutes, to avoid holding a second live listener next to the page's own.
   const { concessionaires } = useConcessionaires("all");
 
-  const name = user ? displayNameFor(user) : "";
+  // The name on the person's own record, read live so an edit on the Profile
+  // page shows here at once. Until it arrives — or if the record has no name —
+  // the email stands in.
+  const [profile, setProfile] = useState<{ uid: string; name: string } | null>(null);
+  const uid = user?.uid;
+  useEffect(() => {
+    if (!uid) return;
+    return subscribeToOwnProfile(
+      uid,
+      (p) => setProfile({ uid, name: p ? personName(p) : "" }),
+      () => setProfile({ uid, name: "" })
+    );
+  }, [uid]);
+  const profileName = profile && profile.uid === uid ? profile.name : "";
+  const name = profileName || (user ? displayNameFor(user) : "");
   const email = user?.email ?? "";
 
   const monthStr = useMemo(() => currentMonthStr(), []);

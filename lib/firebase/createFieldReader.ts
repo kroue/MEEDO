@@ -22,8 +22,9 @@ import { doc, setDoc, deleteDoc } from "firebase/firestore";
 import { db, auth, callFunction, firebaseConfig } from "./firebase";
 import { logAuditEvent } from "./auditLog";
 import { ACCOUNT_CAPABILITIES, USING_ACCOUNT_FUNCTIONS } from "./accountBackend";
+import { MOBILE_USERNAME_DOMAIN } from "./users";
 
-export const MOBILE_USERNAME_DOMAIN = "meedo.local";
+export { MOBILE_USERNAME_DOMAIN };
 
 /**
  * Our own policy, not Firebase's — Firebase would accept six. These accounts

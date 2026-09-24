@@ -18,6 +18,7 @@ import { daysOverdue, monthSortKey, paymentStatus, PAYMENT_STATUS_STYLES } from 
 import { daysPastDue, formatDueDate } from "@/lib/dueDates";
 import { formatPeso, getFullName } from "@/lib/utils";
 import { usePrintReadiness } from "@/components/print/PrintHost";
+import { SYSTEM_ADDRESS, SYSTEM_TELEPHONE } from "@/lib/appInfo";
 
 const ACCOUNT_NOT_FOUND = "That account could not be found.";
 const PAYMENT_NOT_FOUND = "That payment record could not be found.";
@@ -56,7 +57,9 @@ function DocumentHeader({
   return (
     <div className="mb-6 border-b border-slate-800 pb-6 text-center">
       <h1 className="mb-1 text-2xl font-bold uppercase tracking-widest">South Wao Water System</h1>
-      <p className="text-xs font-medium text-slate-500">Wao, Lanao del Sur • Tel: 0985 762 5456</p>
+      <p className="text-xs font-medium text-slate-500">
+        {SYSTEM_ADDRESS} • Tel: {SYSTEM_TELEPHONE}
+      </p>
       <p className="mt-2 text-sm font-medium uppercase text-slate-600">{title}</p>
       {generatedOn && (
         <p className="mt-2 text-xs font-medium text-slate-400">Date Generated: {generatedOn.toLocaleDateString()}</p>

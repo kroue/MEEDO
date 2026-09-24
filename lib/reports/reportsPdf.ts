@@ -15,6 +15,7 @@
  */
 
 import type { jsPDF as JsPdf } from "jspdf";
+import { SYSTEM_ADDRESS, SYSTEM_TELEPHONE } from "../appInfo";
 import type { UserOptions, autoTable as AutoTableFn } from "jspdf-autotable";
 
 type AutoTable = typeof AutoTableFn;
@@ -89,7 +90,6 @@ const WHITE: Rgb = [255, 255, 255];
 const FALLBACK_TIER_COLOR = "#94a3b8";
 
 const ORGANIZATION = "South Wao Water System";
-const ADDRESS_LINE = "Wao, Lanao del Sur • Tel: 0985 762 5456";
 
 // ── Formatting ───────────────────────────────────────────────────────────────
 
@@ -247,7 +247,10 @@ class PdfWriter {
     }
 
     this.text(ORGANIZATION.toUpperCase(), textX, top + 7, { size: 13, bold: true });
-    this.text(ADDRESS_LINE, textX, top + 12.5, { size: 8.5, color: MUTED });
+    // The address and telephone on separate lines: together they run into the
+    // "Generated …" stamp on the right of the same line.
+    this.text(SYSTEM_ADDRESS, textX, top + 12.5, { size: 8.5, color: MUTED });
+    this.text(`Tel: ${SYSTEM_TELEPHONE}`, textX, top + 16.5, { size: 8.5, color: MUTED });
 
     const right = PAGE_W - MARGIN;
     const stamp = plainSpaces(

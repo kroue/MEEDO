@@ -59,21 +59,22 @@ suite("parseXlsxFile against the test workbook", () => {
     expect(barangays).toEqual(["BO-OT", "CG", "KABATANGAN"]);
   });
 
-  it("parses a duplicate meter number as two rows, leaving it to the writer", async () => {
-    // The parser sees rows; only batchImportConcessionaires sees the whole
-    // sheet, so that is where the duplicate is reported and dropped. Pinned
-    // here so the division of responsibility stays deliberate.
-    const { all } = await load();
-    expect(all.filter((c) => c.meterNumber === "MTR-1001").length).toBe(2);
+  it("leaves out a second row with the same meter number, naming the first", async () => {
+    // Caught here rather than only when writing, so the office sees which row
+    // it was before importing. batchImportConcessionaires still refuses a
+    // duplicate too, as a last line of defence.
+    const { all, result } = await load();
+    expect(all.filter((c) => c.meterNumber === "MTR-1001").length).toBe(1);
+    const duplicate = result.issues.find((i) => i.kind === "Meter number already used on an earlier row");
+    expect(duplicate?.level).toBe("skipped");
+    expect(duplicate?.note).toContain("row 2");
   });
 
   it("imports only the usable rows", async () => {
     const { result, all } = await load();
     // 13 data rows: 9 importable, 2 unusable, 1 blank, 1 duplicate meter.
-    // The duplicate parses here — batchImportConcessionaires is what rejects
-    // it, since only the write path can see the whole sheet at once.
-    expect(all.length).toBe(10);
-    expect(result.totalSkipped).toBe(2); // no meter number; no name
+    expect(all.length).toBe(9);
+    expect(result.totalSkipped).toBe(3); // no meter number; no name; duplicate
   });
 
   it("matches header aliases rather than exact template wording", async () => {
@@ -171,13 +172,21 @@ suite("parseXlsxFile against the test workbook", () => {
   it("falls back to RESIDENTIAL for an unrecognised classification", async () => {
     // Imported data has carried odd classification strings before; a row like
     // this should still import rather than failing the whole sheet.
-    const { byMeter } = await load();
+    // It decides the rate, though, so it is flagged for checking — never
+    // defaulted silently.
+    const { byMeter, result } = await load();
     expect(byMeter.get("MTR-3003")!.classification).toBe("RESIDENTIAL");
+    expect(result.issues).toContainEqual(
+      expect.objectContaining({ column: "Classification", level: "check", kind: "Unknown classification imported as RESIDENTIAL" })
+    );
   });
 
-  it("ignores history and payments for meters that aren't in the sheet", async () => {
-    const { all } = await load();
+  it("leaves out history and payments for meters that aren't in the sheet, and says so", async () => {
+    const { all, result } = await load();
     expect(all.some((c) => c.meterNumber === "MTR-9999")).toBe(false);
+    const orphans = result.issues.filter((i) => i.note?.startsWith("MTR-9999"));
+    expect(orphans.map((i) => i.sheet).sort()).toEqual(["Billing History", "Connection Payments"]);
+    expect(orphans.every((i) => i.level === "skipped")).toBe(true);
   });
 
   it("gives a brand-new connection no history and only the fee to pay", async () => {
@@ -249,5 +258,119 @@ describe("account numbers and the meter column", () => {
       ["2026-000123", "MTR-9003", "BO-OT", "3", "Pedro", "Santos"],
     ]);
     expect(account.meterNumber).toBe("MTR-9003");
+  });
+});
+
+/**
+ * The cleaning, end to end through a workbook laid out like the template —
+ * built in memory, so it holds without the fixture.
+ */
+describe("cleaning the office's own spellings", () => {
+  const HEADERS = [
+    "Meter No", "Barangay", "Purok", "First Name", "Middle Name", "Last Name", "Classification",
+    "Status", "Disconnected Reason", "Billing Balance", "Water Meter Fee", "Application Fee",
+    "Inspection Fee", "Other Payables", "Remarks",
+  ];
+
+  async function parse(concessionaires: unknown[][], billing?: unknown[][], payments?: unknown[][]) {
+    const XLSX = await import("xlsx");
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([HEADERS, ...concessionaires]), "Concessionaires");
+    if (billing) XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(billing), "Billing History");
+    if (payments) XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(payments), "Connection Payments");
+    const bytes = XLSX.write(wb, { type: "array", bookType: "xlsx" }) as ArrayBuffer;
+    const result = await parseXlsxFile(new File([bytes], "sheet.xlsx"));
+    return { result, all: result.sheets.flatMap((s) => s.concessionaires) };
+  }
+
+  it("stores what the office meant, not what it typed", async () => {
+    const { all } = await parse([
+      ["mtr 710002", "BOOT", "Purok 3", "CHRISTIAN", "e", "BUSTAMANTE JR", "Comm A", "DISCO", "NON PAYMENT",
+        "₱5,410.52", "1,600.00", "₱150", "50.00 ", "200 (pipes)", "  Meter  replaced 2025 "],
+    ]);
+    const [c] = all;
+    expect(c).toMatchObject({
+      meterNumber: "MTR-710002",
+      barangay: "BO-OT",
+      purok: "3",
+      firstName: "Christian",
+      middleName: "E.",
+      lastName: "Bustamante Jr.",
+      classification: "COMMERCIAL A",
+      status: "DISCONNECTED",
+      disconnectedReason: "NON-PAYMENT",
+      billingBalance: 5410.52,
+    });
+    expect(c.connectionFeeDetails).toMatchObject({
+      waterMeter: 1600,
+      applicationFee: 150,
+      inspectionFee: 50,
+      otherPayables: [{ description: "pipes", amount: 200 }],
+      total: 2000,
+    });
+    expect(c.remarks[0].text).toBe("Meter replaced 2025");
+  });
+
+  it("keeps every account in one of the nine barangays", async () => {
+    const { result } = await parse([
+      ["MTR-1", "Cebuano Group", "1", "Ana", "", "Cruz", "", "", "", 0, 0, 0, 0, 0, ""],
+      ["MTR-2", "Katutongan", "1", "Ben", "", "Lim", "", "", "", 0, 0, 0, 0, 0, ""],
+      ["MTR-3", "Poblacion", "1", "Cai", "", "Uy", "", "", "", 0, 0, 0, 0, 0, ""],
+    ]);
+    expect(result.sheets.map((s) => s.barangay).sort()).toEqual(["CG", "KATUTUNGAN"]);
+    expect(result.issues).toContainEqual(
+      expect.objectContaining({ row: 3, level: "check", kind: "Barangay spelling corrected" })
+    );
+    expect(result.issues).toContainEqual(
+      expect.objectContaining({ row: 4, level: "skipped", kind: "Unknown barangay" })
+    );
+  });
+
+  it("catches a duplicate that differs only in how the meter number is written", async () => {
+    // "MTR 710057" and "MTR-710057" used to get past the duplicate check and
+    // become two accounts.
+    const { all, result } = await parse([
+      ["MTR-710057", "MILAYA", "1", "Rowena", "", "Dagoc", "", "", "", 0, 0, 0, 0, 0, ""],
+      ["MTR 710057", "MILAYA", "1", "ROWENA", "", "DAGOC", "", "", "", 0, 0, 0, 0, 0, ""],
+    ]);
+    expect(all.length).toBe(1);
+    expect(result.issues).toContainEqual(
+      expect.objectContaining({ row: 3, level: "skipped", kind: "Meter number already used on an earlier row" })
+    );
+  });
+
+  it("leaves out a row it can't read rather than importing a wrong balance", async () => {
+    const { all, result } = await parse([
+      ["MTR-5", "MILAYA", "1", "Liza", "", "Ompad", "", "", "", "paid", 0, 0, 0, 0, ""],
+    ]);
+    expect(all.length).toBe(0);
+    expect(result.totalSkipped).toBe(1);
+    expect(result.issues[0]).toMatchObject({ column: "Billing Balance", level: "skipped" });
+  });
+
+  it("leaves out a header row pasted into the data", async () => {
+    const { all, result } = await parse([HEADERS]);
+    expect(all.length).toBe(0);
+    expect(result.issues[0].kind).toBe("Header row repeated in the data");
+  });
+
+  it("links bills and payments whose meter is written differently", async () => {
+    const { all } = await parse(
+      [["MTR-710013", "DIOMIL", "2", "Joel", "", "Largo", "", "", "", 0, 1600, 150, 50, 0, ""]],
+      [
+        ["Meter No", "Month", "Previous Reading", "Current Reading", "Peso Amount", "OR Number", "Amount Paid", "Billing Date"],
+        ["MTR 710013", "July 2026", 100, 112, "₱229.60", "", "229.60", "2026-07-05"],
+      ],
+      [
+        ["Meter No", "Slot", "Amount", "OR Number", "Date"],
+        ["mtr710013", "first", "₱500", "CF-1", "2026-01-15"],
+      ]
+    );
+    const [c] = all;
+    expect(c.billingHistory).toEqual([
+      expect.objectContaining({ month: "JUL 2026", pesoAmount: 229.6, amountPaid: 229.6 }),
+    ]);
+    expect(c.meterPayments).toEqual([expect.objectContaining({ slot: "1st", amount: 500 })]);
+    expect(c.waterMeterBalance).toBe(1300);
   });
 });

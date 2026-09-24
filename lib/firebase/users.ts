@@ -245,3 +245,54 @@ export async function updateConsoleUserDetails(
     actorEmail
   );
 }
+
+// ── Names for the emails the system records ────────────────────────────────
+
+/**
+ * Field readers sign in with a username, which Auth only knows as a synthetic
+ * address on this domain (see createFieldReader.ts). Kept here rather than
+ * there so that reading it doesn't pull account creation into every page.
+ */
+export const MOBILE_USERNAME_DOMAIN = "meedo.local";
+
+/** The address a field reader's actions are logged under. */
+export function fieldReaderEmail(username: string): string {
+  return `${username.trim().toLowerCase()}@${MOBILE_USERNAME_DOMAIN}`;
+}
+
+/** "First Last", or "" when neither is on the record. */
+export function personName(p: { firstName?: string; lastName?: string }): string {
+  return [p.firstName, p.lastName].map((s) => (s ?? "").trim()).filter(Boolean).join(" ");
+}
+
+/**
+ * Every account's name, keyed by the lower-cased email the system records
+ * against its actions — for showing "Juan Dela Cruz" where the audit log
+ * stores juan@example.com. Admin-only: the rules let nobody else read other
+ * people's accounts.
+ */
+export function subscribeToPeopleDirectory(
+  onData: (names: Map<string, string>) => void,
+  onError: (error: Error) => void
+): Unsubscribe {
+  return onSnapshot(
+    collection(db, "users"),
+    (snapshot) => {
+      const names = new Map<string, string>();
+      snapshot.docs.forEach((d) => {
+        const data = d.data();
+        const name = personName({
+          firstName: data.firstName as string | undefined,
+          lastName: data.lastName as string | undefined,
+        });
+        if (!name) return;
+        const email = (data.email as string | undefined)?.trim().toLowerCase();
+        if (email) names.set(email, name);
+        const username = data.username as string | undefined;
+        if (username) names.set(fieldReaderEmail(username), name);
+      });
+      onData(names);
+    },
+    onError
+  );
+}

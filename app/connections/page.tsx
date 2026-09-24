@@ -1,7 +1,7 @@
 "use client";
 
 import { userMessage } from "@/lib/userMessage";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Card,
   CardContent,
@@ -41,6 +41,9 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { NewConnectionDialog } from "@/components/NewConnectionDialog";
 import { Pagination, usePagination } from "@/components/ui/pagination";
+import { SortSelect } from "@/components/SortSelect";
+import { accountSorts, byText, sortRows, thenBy, type SortOption } from "@/lib/sorting";
+import { useSortChoice } from "@/lib/useSortChoice";
 
 function SkeletonRow() {
   return (
@@ -52,6 +55,18 @@ function SkeletonRow() {
       ))}
     </TableRow>
   );
+}
+
+/**
+ * Where an account's connection stands, as a sortable key: not yet approved,
+ * not set up, owing, part paid, fully paid — the order work gets done in.
+ */
+function connectionStage(c: Concessionaire): string {
+  if (!isAccountApproved(c)) return "0";
+  if (!c.connectionFeeDetails) return "1";
+  const paid = (c.meterPayments || []).reduce((sum, p) => (p.voided ? sum : sum + p.amount), 0);
+  if (paid >= c.connectionFeeDetails.total && c.connectionFeeDetails.total > 0) return "4";
+  return paid > 0 ? "3" : "2";
 }
 
 function ConnectionStatusBadge({ concessionaire }: { concessionaire: Concessionaire }) {
@@ -131,18 +146,41 @@ export default function ConnectionsPage() {
 
   const { concessionaires, loading, error } = useConcessionaires(selectedBarangay);
 
-  const filteredConcessionaires = concessionaires.filter((c) => {
-    if (!search) return true;
-    const q = search.toLowerCase();
-    const fullName = getFullName(c).toLowerCase();
-    return (
-      fullName.includes(q) ||
-      (c.meterNumber || "").toLowerCase().includes(q) ||
-      (c.purok || "").toLowerCase().includes(q)
-    );
-  });
+  const filteredConcessionaires = useMemo(
+    () =>
+      concessionaires.filter((c) => {
+        if (!search) return true;
+        const q = search.toLowerCase();
+        const fullName = getFullName(c).toLowerCase();
+        return (
+          fullName.includes(q) ||
+          (c.meterNumber || "").toLowerCase().includes(q) ||
+          (c.purok || "").toLowerCase().includes(q)
+        );
+      }),
+    [concessionaires, search]
+  );
 
-  const pagedConcessionaires = usePagination(filteredConcessionaires);
+  // Alphabetical by default. The extra order here groups accounts by where
+  // their connection stands, so the ones still to set up come first.
+  const sortOptions = useMemo<SortOption<Concessionaire>[]>(
+    () => [
+      ...accountSorts<Concessionaire>(),
+      {
+        id: "connection",
+        label: "Connection status",
+        compare: thenBy(byText((c) => connectionStage(c)), byText((c) => getFullName(c))),
+      },
+    ],
+    []
+  );
+  const { option: sort, setSort } = useSortChoice("connections", sortOptions);
+  const sortedConcessionaires = useMemo(
+    () => sortRows(filteredConcessionaires, sort.compare),
+    [filteredConcessionaires, sort]
+  );
+
+  const pagedConcessionaires = usePagination(sortedConcessionaires);
 
   return (
     <div className="space-y-6 max-w-[1400px] mx-auto p-4 md:p-8">
@@ -215,6 +253,15 @@ export default function ConnectionsPage() {
                   </SelectContent>
                 </Select>
               </div>
+              <SortSelect
+                options={sortOptions}
+                value={sort}
+                onChange={(id) => {
+                  setSort(id);
+                  pagedConcessionaires.setPage(1);
+                }}
+                className="w-full max-w-[220px]"
+              />
             </div>
           </div>
 

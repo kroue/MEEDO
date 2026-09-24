@@ -39,6 +39,7 @@ import {
   type ParsedSheet,
   type XlsxParseResult,
 } from "@/lib/firebase/xlsxParser";
+import { ImportIssues } from "@/components/ImportIssues";
 import {
   batchImportConcessionaires,
   fetchMeterNumberIndex,
@@ -541,6 +542,9 @@ export default function ImportPage() {
         </div>
       )}
 
+      {/* What cleaning did to the workbook — shown before anything is saved */}
+      {parsed && status === "ready" && <ImportIssues issues={parsed.issues} />}
+
       {/* Sheet selector & preview */}
       {parsed && (status === "ready" || status === "uploading") && (
         <Card className="bg-white/80 backdrop-blur-md border-slate-200/60 shadow-sm animate-in fade-in slide-in-from-bottom-4 duration-500 ease-snappy delay-150 fill-mode-backwards">
@@ -726,9 +730,11 @@ export default function ImportPage() {
               "Account numbers are not in the workbook — each new account is given one on import, like 2026-000042",
               "An account already in the system keeps the account number it was given",
               "Header text matching is case-insensitive — \"Meter No\", \"meter no.\", and \"Meter Number\" all work",
-              "Billing History / Connection Payments rows referencing an unknown Meter No are silently ignored",
+              "Spellings are tidied before import — \"Bo ot\" → BO-OT, \"Comm A\" → COMMERCIAL A, \"₱1,250.00\" → 1,250.00, \"Purok 3\" → 3 — and every change is listed",
+              "A row that can't be read safely — an unknown barangay, an amount like \"paid\", a meter number already used — is left out and listed, not imported wrong",
+              "Billing History / Connection Payments rows for a meter that isn't being imported are left out and listed",
               "Excel date cells (e.g. Billing Date) are converted automatically — no need to format as text",
-              "Classification/Status default to RESIDENTIAL / CONNECTED if left blank or unrecognized",
+              "A blank or unrecognised Classification / Status imports as RESIDENTIAL / CONNECTED — and is listed for checking",
             ].map((note) => (
               <li key={note} className="flex items-start gap-2">
                 <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500 mt-0.5 shrink-0" />

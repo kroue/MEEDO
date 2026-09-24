@@ -1,7 +1,7 @@
 "use client";
 
 import { userMessage } from "@/lib/userMessage";
-import { useState, useTransition } from "react";
+import { useMemo, useState, useTransition } from "react";
 import {
   Card,
   CardContent,
@@ -39,6 +39,9 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { ConcessionaireDialog } from "@/components/ConcessionaireDialog";
 import { Pagination, usePagination } from "@/components/ui/pagination";
+import { SortSelect } from "@/components/SortSelect";
+import { accountSorts, sortRows } from "@/lib/sorting";
+import { useSortChoice } from "@/lib/useSortChoice";
 import { useRouter } from "next/navigation";
 import {
   MapPin,
@@ -171,19 +174,31 @@ export default function ConcessionairesPage() {
 
   const { concessionaires, loading, error, refresh } = useConcessionaires(selectedBarangay);
 
-  const filteredConcessionaires = concessionaires.filter((c) => {
-    if (!search) return true;
-    const q = search.toLowerCase();
-    const fullName = getFullName(c).toLowerCase();
-    return (
-      fullName.includes(q) ||
-      c.meterNumber.toLowerCase().includes(q) ||
-      (c.accountNumber ?? "").toLowerCase().includes(q) ||
-      c.purok.toLowerCase().includes(q)
-    );
-  });
+  const filteredConcessionaires = useMemo(
+    () =>
+      concessionaires.filter((c) => {
+        if (!search) return true;
+        const q = search.toLowerCase();
+        const fullName = getFullName(c).toLowerCase();
+        return (
+          fullName.includes(q) ||
+          c.meterNumber.toLowerCase().includes(q) ||
+          (c.accountNumber ?? "").toLowerCase().includes(q) ||
+          c.purok.toLowerCase().includes(q)
+        );
+      }),
+    [concessionaires, search]
+  );
 
-  const pagedConcessionaires = usePagination(filteredConcessionaires);
+  // Alphabetical unless someone on this PC picked another order.
+  const sortOptions = useMemo(() => accountSorts<Concessionaire>(), []);
+  const { option: sort, setSort } = useSortChoice("concessionaires", sortOptions);
+  const sortedConcessionaires = useMemo(
+    () => sortRows(filteredConcessionaires, sort.compare),
+    [filteredConcessionaires, sort]
+  );
+
+  const pagedConcessionaires = usePagination(sortedConcessionaires);
 
   // KPI aggregates (removed)
 
@@ -331,15 +346,27 @@ export default function ConcessionairesPage() {
                 </CardDescription>
               </div>
 
-              {/* Search */}
+              {/* Search and order */}
               {!loading && concessionaires.length > 0 && (
-                <div className="relative w-full sm:w-64">
-                  <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
-                  <Input
-                    placeholder="Search name, meter, purok…"
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                    className="pl-9 text-xs h-8 bg-white border-slate-200"
+                <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+                  <div className="relative w-full sm:w-64">
+                    <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+                    <Input
+                      placeholder="Search name, meter, purok…"
+                      value={search}
+                      onChange={(e) => setSearch(e.target.value)}
+                      className="pl-9 text-xs h-8 bg-white border-slate-200"
+                    />
+                  </div>
+                  <SortSelect
+                    options={sortOptions}
+                    value={sort}
+                    onChange={(id) => {
+                      setSort(id);
+                      pagedConcessionaires.setPage(1);
+                    }}
+                    hideLabel
+                    size="sm"
                   />
                 </div>
               )}

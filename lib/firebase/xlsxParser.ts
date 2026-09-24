@@ -16,20 +16,37 @@
  *   3. "Connection Payments" (optional) — one row per connection-fee
  *      installment, linked the same way.
  *
+ * Every value passes through lib/importCleaning.ts on the way in, and the
+ * result lists each thing that was tidied, each guess that needs checking,
+ * and each row left out — with the row number the office sees — so the
+ * import page can show all of it before anything is written.
+ *
  * Use `downloadImportTemplate()` to hand the office a blank, correctly
  * headered version of this workbook to fill in.
  */
 
 import * as XLSX from "xlsx";
 import type {
-  ConcessionaireClassification,
-  ConcessionaireStatus,
-  DisconnectedReason,
+  Barangay,
   MonthlyBillingRecord,
   MeterPayment,
   NewConcessionaireInput,
 } from "./types";
-import { CONCESSIONAIRE_CLASSIFICATIONS, CONCESSIONAIRE_STATUSES } from "./types";
+import {
+  cleanBarangay,
+  cleanClassification,
+  cleanDisconnectedReason,
+  cleanMeterNo,
+  cleanMiddleName,
+  cleanMoney,
+  cleanMonth,
+  cleanName,
+  cleanPurok,
+  cleanSlot,
+  cleanStatus,
+  isHeaderText,
+  type Cleaned,
+} from "../importCleaning";
 
 // ── Sheet names ──────────────────────────────────────────────────────────────
 
@@ -75,12 +92,6 @@ function cell(row: unknown[], col: number): unknown {
 
 // ── Value coercion ─────────────────────────────────────────────────────────
 
-function toNum(v: unknown): number {
-  if (v === "" || v === null || v === undefined) return 0;
-  const n = Number(v);
-  return isNaN(n) ? 0 : n;
-}
-
 function toStr(v: unknown): string {
   if (v === null || v === undefined) return "";
   return String(v).trim();
@@ -95,21 +106,63 @@ function toIsoDate(v: unknown): string | undefined {
   return isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
 }
 
-/** Meter numbers are sometimes auto-formatted as dates/numbers by Excel — keep the raw text. */
-function meterKey(v: unknown): string {
-  return toStr(v).toUpperCase();
+/** Matches how batchImportConcessionaires keys meter numbers. */
+function meterKey(meterNumber: string): string {
+  return meterNumber.trim().toUpperCase();
 }
 
-function normaliseClassification(v: unknown): ConcessionaireClassification {
-  const s = toStr(v).toUpperCase();
-  const match = CONCESSIONAIRE_CLASSIFICATIONS.find((c) => c === s);
-  return match ?? "RESIDENTIAL";
+function isBlankRow(row: unknown[]): boolean {
+  return !row.some((v) => toStr(v));
 }
 
-function normaliseStatus(v: unknown): ConcessionaireStatus {
-  const s = toStr(v).toUpperCase();
-  const match = CONCESSIONAIRE_STATUSES.find((c) => c === s);
-  return match ?? "CONNECTED";
+// ── What the import did ──────────────────────────────────────────────────────
+
+export type ImportIssueLevel = "fixed" | "check" | "skipped";
+
+/**
+ * One thing the import tidied, wants checked, or left out — listed on the
+ * import page before anything is written.
+ */
+export interface ImportIssue {
+  sheet: string;
+  /** The row number as the office sees it in the spreadsheet. */
+  row: number;
+  /** The column it concerns, or "Whole row". */
+  column: string;
+  level: ImportIssueLevel;
+  /** Short, stable label the import page groups issues by. */
+  kind: string;
+  note?: string;
+}
+
+/**
+ * Collects the cleaning of one spreadsheet row. The first value that can't be
+ * stored becomes the reason the row is left out; the changes made to the
+ * others are only reported for a row that goes in.
+ */
+class RowCleaner {
+  readonly changes: ImportIssue[] = [];
+  refusal: ImportIssue | null = null;
+  private readonly sheet: string;
+  private readonly row: number;
+
+  constructor(sheet: string, row: number) {
+    this.sheet = sheet;
+    this.row = row;
+  }
+
+  take<T>(column: string, cleaned: Cleaned<T>, fallback: T): T {
+    if (!cleaned.ok) {
+      this.refusal ??= this.issue(column, "skipped", cleaned.kind, `${cleaned.note} — row left out`);
+      return fallback;
+    }
+    cleaned.changes.forEach((c) => this.changes.push(this.issue(column, c.level, c.kind, c.note)));
+    return cleaned.value;
+  }
+
+  issue(column: string, level: ImportIssueLevel, kind: string, note?: string): ImportIssue {
+    return { sheet: this.sheet, row: this.row, column, level, kind, ...(note ? { note } : {}) };
+  }
 }
 
 // ── Sheet: Concessionaires ───────────────────────────────────────────────────
@@ -144,9 +197,10 @@ const CONCESSIONAIRE_COLUMNS = {
 function parseConcessionairesSheet(ws: XLSX.WorkSheet): {
   rows: ConcessionaireRow[];
   skipped: number;
+  issues: ImportIssue[];
 } {
   const rows = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, defval: "", raw: true });
-  if (rows.length === 0) return { rows: [], skipped: 0 };
+  if (rows.length === 0) return { rows: [], skipped: 0, issues: [] };
 
   const headerIndex = buildHeaderIndex(rows[0] as unknown[]);
   const col = Object.fromEntries(
@@ -157,47 +211,121 @@ function parseConcessionairesSheet(ws: XLSX.WorkSheet): {
   ) as Record<keyof typeof CONCESSIONAIRE_COLUMNS, number>;
 
   const result: ConcessionaireRow[] = [];
+  const issues: ImportIssue[] = [];
+  // Meter number -> the row that used it first. A second row with the same
+  // meter is left out here, where the office can see which row it was, and
+  // batchImportConcessionaires still refuses one as a last line of defence.
+  const firstRowFor = new Map<string, number>();
   let skipped = 0;
 
   for (let r = 1; r < rows.length; r++) {
     const row = rows[r] as unknown[];
-    const meterNo = toStr(cell(row, col.meterNo));
-    const lastName = toStr(cell(row, col.lastName));
-    const firstName = toStr(cell(row, col.firstName));
+    if (isBlankRow(row)) continue;
 
-    // Skip blank / total rows — a real row needs at least a meter no and a name.
-    if (!meterNo || (!firstName && !lastName)) {
-      if (row.some((v) => toStr(v))) skipped++; // non-empty but unusable row
+    const c = new RowCleaner(SHEET_CONCESSIONAIRES, r + 1);
+    const leaveOut = (issue: ImportIssue) => {
+      skipped++;
+      issues.push(issue);
+    };
+
+    const rawMeter = cell(row, col.meterNo);
+    const typedFirst = toStr(cell(row, col.firstName));
+    const typedLast = toStr(cell(row, col.lastName));
+    if (isHeaderText(rawMeter)) {
+      leaveOut(c.issue("Whole row", "skipped", "Header row repeated in the data", "Column headings, not an account — row left out"));
+      continue;
+    }
+    // A real row needs at least a meter number and a name.
+    if (!toStr(rawMeter)) {
+      leaveOut(c.issue("Meter No", "skipped", "No meter number", "A row needs a meter number — row left out"));
+      continue;
+    }
+    if (!typedFirst && !typedLast) {
+      leaveOut(c.issue("First Name, Last Name", "skipped", "No name", "A row needs a name — row left out"));
       continue;
     }
 
-    const waterMeterFee = col.waterMeterFee >= 0 ? toNum(cell(row, col.waterMeterFee)) : 0;
-    const applicationFee = col.applicationFee >= 0 ? toNum(cell(row, col.applicationFee)) : 0;
-    const inspectionFee = col.inspectionFee >= 0 ? toNum(cell(row, col.inspectionFee)) : 0;
-    const otherPayablesAmount = toNum(cell(row, col.otherPayables));
+    const meterNumber = c.take("Meter No", cleanMeterNo(rawMeter), "");
+    const barangay = c.take<Barangay | "">("Barangay", cleanBarangay(cell(row, col.barangay)), "");
+    const purok = c.take("Purok", cleanPurok(cell(row, col.purok)), "");
+    const firstName = c.take("First Name", cleanName(typedFirst, { first: true }), "");
+    const middleName = c.take("Middle Name", cleanMiddleName(cell(row, col.middleName)), "");
+    const lastName = c.take("Last Name", cleanName(typedLast), "");
+    // A sheet without the column at all keeps the old default quietly; a
+    // blank or unknown value in a column that is there gets flagged.
+    const classification =
+      col.classification >= 0
+        ? c.take("Classification", cleanClassification(cell(row, col.classification)), "RESIDENTIAL")
+        : "RESIDENTIAL";
+    const status =
+      col.status >= 0 ? c.take("Status", cleanStatus(cell(row, col.status)), "CONNECTED") : "CONNECTED";
+    const disconnectedReason = c.take(
+      "Disconnected Reason",
+      cleanDisconnectedReason(cell(row, col.disconnectedReason)),
+      ""
+    );
+    const billingBalance = c.take("Billing Balance", cleanMoney(cell(row, col.billingBalance)), 0);
+    const waterMeterFee = c.take("Water Meter Fee", cleanMoney(cell(row, col.waterMeterFee)), 0);
+    const applicationFee = c.take("Application Fee", cleanMoney(cell(row, col.applicationFee)), 0);
+    const inspectionFee = c.take("Inspection Fee", cleanMoney(cell(row, col.inspectionFee)), 0);
+
+    // "200 (pipes)" — the words say what the payable is for, which is exactly
+    // what its description holds, so they are kept rather than dropped.
+    let otherCleaned = cleanMoney(cell(row, col.otherPayables));
+    let otherDescription = "Imported";
+    if (otherCleaned.ok && otherCleaned.leftover) {
+      otherDescription = otherCleaned.leftover;
+      otherCleaned = {
+        ...otherCleaned,
+        changes: [
+          ...otherCleaned.changes.filter((ch) => ch.kind !== "Words dropped from an amount"),
+          {
+            level: "fixed",
+            kind: "Words in Other Payables kept as its description",
+            note: `"${otherCleaned.leftover}"`,
+          },
+        ],
+      };
+    }
+    const otherPayablesAmount = c.take("Other Payables", otherCleaned, 0);
+    const remarksText = toStr(cell(row, col.remarks)).replace(/\s+/g, " ");
+
+    if (c.refusal) {
+      leaveOut(c.refusal);
+      continue;
+    }
+    const key = meterKey(meterNumber);
+    const earlier = firstRowFor.get(key);
+    if (earlier !== undefined) {
+      leaveOut(
+        c.issue(
+          "Meter No",
+          "skipped",
+          "Meter number already used on an earlier row",
+          `${meterNumber} is on row ${earlier} — only that row is imported`
+        )
+      );
+      continue;
+    }
+    firstRowFor.set(key, r + 1);
+    issues.push(...c.changes);
+
     const connectionFeeTotal = waterMeterFee + applicationFee + inspectionFee + otherPayablesAmount;
-
-    const billingBalance = toNum(cell(row, col.billingBalance));
-    const remarksText = toStr(cell(row, col.remarks));
-    const disconnectedReasonText = toStr(cell(row, col.disconnectedReason)).toUpperCase();
-
     result.push({
-      meterKey: meterKey(meterNo),
+      meterKey: key,
       data: {
-        barangay: toStr(cell(row, col.barangay)).toUpperCase(),
-        purok: toStr(cell(row, col.purok)),
-        meterNumber: meterNo,
+        barangay: barangay as Barangay,
+        purok,
+        meterNumber,
         firstName,
-        middleName: toStr(cell(row, col.middleName)),
+        middleName,
         lastName,
-        classification: normaliseClassification(cell(row, col.classification)),
-        status: normaliseStatus(cell(row, col.status)),
+        classification,
+        status,
         // Firestore rejects fields with an explicit `undefined` value — these
         // two are only included at all when there's actually a value, rather
         // than set to `undefined` (which is NOT the same as omitting the key).
-        ...(disconnectedReasonText
-          ? { disconnectedReason: disconnectedReasonText as DisconnectedReason }
-          : {}),
+        ...(disconnectedReason ? { disconnectedReason } : {}),
         billingBalance,
         waterMeterBalance: 0, // filled in after Connection Payments are parsed
         totalBalance: billingBalance, // recomputed below
@@ -212,7 +340,7 @@ function parseConcessionairesSheet(ws: XLSX.WorkSheet): {
                 inspectionFee,
                 otherPayables:
                   otherPayablesAmount > 0
-                    ? [{ description: "Imported", amount: otherPayablesAmount }]
+                    ? [{ description: otherDescription, amount: otherPayablesAmount }]
                     : [],
                 total: connectionFeeTotal,
               },
@@ -222,7 +350,19 @@ function parseConcessionairesSheet(ws: XLSX.WorkSheet): {
     });
   }
 
-  return { rows: result, skipped };
+  return { rows: result, skipped, issues };
+}
+
+/**
+ * A Billing History or Connection Payments line, kept with its row number and
+ * the changes made to it until it's known whether its meter matched an
+ * account — a line that never goes in shouldn't list its tidying.
+ */
+interface LinkedLine<T> {
+  row: number;
+  meterNumber: string;
+  item: T;
+  changes: ImportIssue[];
 }
 
 // ── Sheet: Billing History ───────────────────────────────────────────────────
@@ -238,10 +378,14 @@ const BILLING_HISTORY_COLUMNS = {
   billingDate: ["Billing Date"],
 };
 
-function parseBillingHistorySheet(ws: XLSX.WorkSheet): Map<string, MonthlyBillingRecord[]> {
-  const byMeter = new Map<string, MonthlyBillingRecord[]>();
+function parseBillingHistorySheet(ws: XLSX.WorkSheet): {
+  byMeter: Map<string, LinkedLine<MonthlyBillingRecord>[]>;
+  issues: ImportIssue[];
+} {
+  const byMeter = new Map<string, LinkedLine<MonthlyBillingRecord>[]>();
+  const issues: ImportIssue[] = [];
   const rows = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, defval: "", raw: true });
-  if (rows.length === 0) return byMeter;
+  if (rows.length === 0) return { byMeter, issues };
 
   const headerIndex = buildHeaderIndex(rows[0] as unknown[]);
   const col = Object.fromEntries(
@@ -251,31 +395,61 @@ function parseBillingHistorySheet(ws: XLSX.WorkSheet): Map<string, MonthlyBillin
     ])
   ) as Record<keyof typeof BILLING_HISTORY_COLUMNS, number>;
 
+  // Meter + month -> the row that billed it first. A second bill for the same
+  // month would overwrite the first: each bill is stored under its month.
+  const firstRowFor = new Map<string, number>();
+
   for (let r = 1; r < rows.length; r++) {
     const row = rows[r] as unknown[];
-    const meterNo = toStr(cell(row, col.meterNo));
-    const month = toStr(cell(row, col.month));
-    if (!meterNo || !month) continue;
+    if (isBlankRow(row)) continue;
+    const c = new RowCleaner(SHEET_BILLING_HISTORY, r + 1);
+    const rawMeter = cell(row, col.meterNo);
+    if (isHeaderText(rawMeter)) {
+      issues.push(c.issue("Whole row", "skipped", "Header row repeated in the data", "Column headings, not a bill — row left out"));
+      continue;
+    }
+    if (!toStr(rawMeter) || !toStr(cell(row, col.month))) {
+      issues.push(c.issue("Meter No, Month", "skipped", "Bill with no meter number or month", "Row left out"));
+      continue;
+    }
+
+    const meterNumber = c.take("Meter No", cleanMeterNo(rawMeter), "");
+    const month = c.take("Month", cleanMonth(cell(row, col.month)), "");
+    const previousReading = c.take("Previous Reading", cleanMoney(cell(row, col.previousReading)), 0);
+    const reading = c.take("Current Reading", cleanMoney(cell(row, col.currentReading)), 0);
+    const pesoAmount = c.take("Peso Amount", cleanMoney(cell(row, col.pesoAmount)), 0);
+    const amountPaid = c.take("Amount Paid", cleanMoney(cell(row, col.amountPaid)), 0);
+    if (c.refusal) {
+      issues.push(c.refusal);
+      continue;
+    }
+    const key = meterKey(meterNumber);
+    const earlier = firstRowFor.get(`${key}|${month}`);
+    if (earlier !== undefined) {
+      issues.push(
+        c.issue("Month", "skipped", "Month billed twice", `${meterNumber} already has ${month} on row ${earlier} — row left out`)
+      );
+      continue;
+    }
+    firstRowFor.set(`${key}|${month}`, r + 1);
 
     const billingDate = toIsoDate(cell(row, col.billingDate));
     const record: MonthlyBillingRecord = {
-      month: month.toUpperCase(),
-      reading: toNum(cell(row, col.currentReading)),
-      previousReading: toNum(cell(row, col.previousReading)),
-      pesoAmount: toNum(cell(row, col.pesoAmount)),
+      month,
+      reading,
+      previousReading,
+      pesoAmount,
       orNumber: toStr(cell(row, col.orNumber)),
-      amountPaid: toNum(cell(row, col.amountPaid)),
+      amountPaid,
       // Omit entirely rather than set to `undefined` — Firestore rejects that.
       ...(billingDate ? { billingDate } : {}),
     };
-
-    const key = meterKey(meterNo);
     const list = byMeter.get(key) ?? [];
-    list.push(record);
+    list.push({ row: r + 1, meterNumber, item: record, changes: c.changes });
     byMeter.set(key, list);
   }
 
-  return byMeter;
+  return { byMeter, issues };
 }
 
 // ── Sheet: Connection Payments ───────────────────────────────────────────────
@@ -288,10 +462,14 @@ const CONNECTION_PAYMENTS_COLUMNS = {
   date: ["Date"],
 };
 
-function parseConnectionPaymentsSheet(ws: XLSX.WorkSheet): Map<string, MeterPayment[]> {
-  const byMeter = new Map<string, MeterPayment[]>();
+function parseConnectionPaymentsSheet(ws: XLSX.WorkSheet): {
+  byMeter: Map<string, LinkedLine<MeterPayment>[]>;
+  issues: ImportIssue[];
+} {
+  const byMeter = new Map<string, LinkedLine<MeterPayment>[]>();
+  const issues: ImportIssue[] = [];
   const rows = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, defval: "", raw: true });
-  if (rows.length === 0) return byMeter;
+  if (rows.length === 0) return { byMeter, issues };
 
   const headerIndex = buildHeaderIndex(rows[0] as unknown[]);
   const col = Object.fromEntries(
@@ -303,27 +481,42 @@ function parseConnectionPaymentsSheet(ws: XLSX.WorkSheet): Map<string, MeterPaym
 
   for (let r = 1; r < rows.length; r++) {
     const row = rows[r] as unknown[];
-    const meterNo = toStr(cell(row, col.meterNo));
-    const amount = toNum(cell(row, col.amount));
+    if (isBlankRow(row)) continue;
+    const c = new RowCleaner(SHEET_CONNECTION_PAYMENTS, r + 1);
+    const rawMeter = cell(row, col.meterNo);
+    if (isHeaderText(rawMeter)) {
+      issues.push(c.issue("Whole row", "skipped", "Header row repeated in the data", "Column headings, not a payment — row left out"));
+      continue;
+    }
     const orNumber = toStr(cell(row, col.orNumber));
-    if (!meterNo || (!amount && !orNumber)) continue;
+    if (!toStr(rawMeter) || (!toStr(cell(row, col.amount)) && !orNumber)) {
+      issues.push(c.issue("Whole row", "skipped", "Payment with no meter number, amount or receipt", "Row left out"));
+      continue;
+    }
+
+    const meterNumber = c.take("Meter No", cleanMeterNo(rawMeter), "");
+    const slot = c.take("Slot", cleanSlot(cell(row, col.slot)), "Full");
+    const amount = c.take("Amount", cleanMoney(cell(row, col.amount)), 0);
+    if (c.refusal) {
+      issues.push(c.refusal);
+      continue;
+    }
 
     const date = toIsoDate(cell(row, col.date));
     const payment: MeterPayment = {
-      slot: toStr(cell(row, col.slot)) || "Full",
+      slot,
       amount,
       orNumber,
       // Omit entirely rather than set to `undefined` — Firestore rejects that.
       ...(date ? { date } : {}),
     };
-
-    const key = meterKey(meterNo);
+    const key = meterKey(meterNumber);
     const list = byMeter.get(key) ?? [];
-    list.push(payment);
+    list.push({ row: r + 1, meterNumber, item: payment, changes: c.changes });
     byMeter.set(key, list);
   }
 
-  return byMeter;
+  return { byMeter, issues };
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────
@@ -338,12 +531,16 @@ export interface XlsxParseResult {
   sheets: ParsedSheet[];
   totalConcessionaires: number;
   totalSkipped: number;
+  /** Everything tidied, flagged or left out, in spreadsheet order. */
+  issues: ImportIssue[];
 }
 
 function findSheetCaseInsensitive(wb: XLSX.WorkBook, name: string): XLSX.WorkSheet | null {
   const match = wb.SheetNames.find((n) => n.trim().toLowerCase() === name.toLowerCase());
   return match ? wb.Sheets[match] : null;
 }
+
+const SHEET_ORDER = [SHEET_CONCESSIONAIRES, SHEET_BILLING_HISTORY, SHEET_CONNECTION_PAYMENTS];
 
 /**
  * Parse an XLSX File object (from a browser <input type="file">) built from
@@ -362,22 +559,53 @@ export async function parseXlsxFile(file: File): Promise<XlsxParseResult> {
     );
   }
 
-  const { rows, skipped } = parseConcessionairesSheet(concessionairesSheet);
+  const { rows, skipped, issues } = parseConcessionairesSheet(concessionairesSheet);
+  const known = new Set(rows.map((r) => r.meterKey));
 
-  const billingHistoryByMeter = new Map<string, MonthlyBillingRecord[]>();
-  const billingHistorySheet = findSheetCaseInsensitive(wb, SHEET_BILLING_HISTORY);
-  if (billingHistorySheet) {
-    parseBillingHistorySheet(billingHistorySheet).forEach((records, key) =>
-      billingHistoryByMeter.set(key, records)
-    );
+  /**
+   * Keeps the lines whose meter belongs to an imported account, reporting the
+   * changes made to them, and lists the rest — which used to vanish silently.
+   */
+  function link<T>(
+    sheet: string,
+    byMeter: Map<string, LinkedLine<T>[]>,
+    what: string
+  ): Map<string, T[]> {
+    const linked = new Map<string, T[]>();
+    byMeter.forEach((lines, key) => {
+      if (known.has(key)) {
+        linked.set(key, lines.map((l) => l.item));
+        lines.forEach((l) => issues.push(...l.changes));
+      } else {
+        lines.forEach((l) =>
+          issues.push({
+            sheet,
+            row: l.row,
+            column: "Meter No",
+            level: "skipped",
+            kind: `${what} for a meter with no account`,
+            note: `${l.meterNumber} isn't an account being imported (not in the Concessionaires sheet, or its row was left out) — row left out`,
+          })
+        );
+      }
+    });
+    return linked;
   }
 
-  const connectionPaymentsByMeter = new Map<string, MeterPayment[]>();
+  let billingHistoryByMeter = new Map<string, MonthlyBillingRecord[]>();
+  const billingHistorySheet = findSheetCaseInsensitive(wb, SHEET_BILLING_HISTORY);
+  if (billingHistorySheet) {
+    const parsed = parseBillingHistorySheet(billingHistorySheet);
+    issues.push(...parsed.issues);
+    billingHistoryByMeter = link(SHEET_BILLING_HISTORY, parsed.byMeter, "Bill");
+  }
+
+  let connectionPaymentsByMeter = new Map<string, MeterPayment[]>();
   const connectionPaymentsSheet = findSheetCaseInsensitive(wb, SHEET_CONNECTION_PAYMENTS);
   if (connectionPaymentsSheet) {
-    parseConnectionPaymentsSheet(connectionPaymentsSheet).forEach((payments, key) =>
-      connectionPaymentsByMeter.set(key, payments)
-    );
+    const parsed = parseConnectionPaymentsSheet(connectionPaymentsSheet);
+    issues.push(...parsed.issues);
+    connectionPaymentsByMeter = link(SHEET_CONNECTION_PAYMENTS, parsed.byMeter, "Payment");
   }
 
   // Attach billing history + connection payments, then derive balances.
@@ -430,10 +658,15 @@ export async function parseXlsxFile(file: File): Promise<XlsxParseResult> {
   }));
   if (skipped > 0 && sheets.length > 0) sheets[0].skipped = skipped;
 
+  issues.sort(
+    (a, b) => SHEET_ORDER.indexOf(a.sheet) - SHEET_ORDER.indexOf(b.sheet) || a.row - b.row
+  );
+
   return {
     sheets,
     totalConcessionaires: rows.length,
     totalSkipped: skipped,
+    issues,
   };
 }
 

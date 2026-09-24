@@ -12,7 +12,9 @@
 
 export const APP_NAME = "MEEDO Admin Console";
 export const SYSTEM_NAME = "South Wao Water System (MEEDO)";
-export const SYSTEM_ADDRESS = "Wao, Lanao del Sur";
+/** The office's address, as printed on receipts, statements and reports. */
+export const SYSTEM_ADDRESS = "Bus Terminal Lobby, Brgy. Eastern, Wao, Lanao del Sur";
+export const SYSTEM_TELEPHONE = "0985 762 5456";
 
 /** Keep in step with `version` in package.json. */
 export const APP_VERSION = "2.4.1";

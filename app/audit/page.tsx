@@ -46,6 +46,7 @@ import {
   type AuditActionType,
   type AuditLogEntry,
 } from "@/lib/firebase/auditLog";
+import { subscribeToPeopleDirectory } from "@/lib/firebase/users";
 
 const actionTypeConfig: Record<AuditActionType, { icon: React.ElementType; className: string }> = {
   Payment: {
@@ -104,17 +105,30 @@ export default function AuditPage() {
     return unsubscribe;
   }, []);
 
+  // Email -> "First Last" for everyone with an account. An entry by someone
+  // whose account has since gone, or who never had a name set, shows the email.
+  const [people, setPeople] = useState<Map<string, string>>(new Map());
+  useEffect(
+    () =>
+      subscribeToPeopleDirectory(setPeople, (e) =>
+        console.warn("Couldn't load names for the audit log", e)
+      ),
+    []
+  );
+  const nameFor = (email: string) => people.get(email.trim().toLowerCase()) ?? "";
+
   const filteredLogs = useMemo(() => {
     const q = search.trim().toLowerCase();
     return logs.filter((log) => {
       const matchesSearch =
         q === "" ||
         log.description.toLowerCase().includes(q) ||
-        log.user.toLowerCase().includes(q);
+        log.user.toLowerCase().includes(q) ||
+        (people.get(log.user.trim().toLowerCase()) ?? "").toLowerCase().includes(q);
       const matchesType = typeFilter === "all" || log.actionType === typeFilter;
       return matchesSearch && matchesType;
     });
-  }, [logs, search, typeFilter]);
+  }, [logs, search, typeFilter, people]);
 
   const pagedLogs = usePagination(filteredLogs);
 
@@ -193,7 +207,7 @@ export default function AuditPage() {
                 <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                 <Input
                   id="audit-search"
-                  placeholder="Search by description or user..."
+                  placeholder="Search by description, name or email..."
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   className="pl-9 text-sm"
@@ -283,7 +297,16 @@ export default function AuditPage() {
                         {formatTimestamp(log.timestamp)}
                       </TableCell>
                       <TableCell>
-                        <p className="text-sm font-medium text-slate-700">{log.user}</p>
+                        {/* The name, with the email underneath: the email is what
+                            the log recorded, so it stays visible for tracing. */}
+                        {nameFor(log.user) ? (
+                          <>
+                            <p className="text-sm font-medium text-slate-700">{nameFor(log.user)}</p>
+                            <p className="text-[11px] text-slate-400">{log.user}</p>
+                          </>
+                        ) : (
+                          <p className="text-sm font-medium text-slate-700">{log.user}</p>
+                        )}
                       </TableCell>
                       <TableCell>
                         <Badge variant="secondary" className={`${config.className} text-[10px]`}>
