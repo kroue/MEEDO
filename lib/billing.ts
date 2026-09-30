@@ -112,17 +112,17 @@ export function monthKeyFor(monthStr: string): string {
 
 // ── Grace period / surcharge / disconnection policy ──────────────────────────
 //
-//   Day 0–15  after the account went delinquent: on-time, no surcharge.
-//   Day 16+   : 3% surcharge added to the water bill.
-//   Any point past the grace period: a flat ₱10 extension fee (once per
-//     delinquency, not per bill) applies for pursuing the debt.
+//   Until its due date: on time. A barangay with a set day falls due on it;
+//     anywhere else, fifteen days after billing (lib/dueDates.ts).
+//   After the due date: each bill the balance is carried into adds a flat ₱10
+//     late payment penalty — ₱10 for every month it stays unpaid.
 //   Day 20+   : eligible for disconnection (a staff decision — this app only
 //     flags it, it never disconnects automatically).
 
 export const GRACE_PERIOD_DAYS = 15;
 export const DISCONNECTION_ELIGIBLE_DAYS = 20;
-export const EXTENSION_FEE = 10;
-export const OVERDUE_SURCHARGE_RATE = 0.03;
+/** ₱ added to each month's bill while a balance is unpaid past its due date. */
+export const LATE_PENALTY = 10;
 
 /**
  * Charged once to put a disconnected line back in service. Collected at the

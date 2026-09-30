@@ -47,6 +47,9 @@ import {
   type AuditLogEntry,
 } from "@/lib/firebase/auditLog";
 import { subscribeToPeopleDirectory } from "@/lib/firebase/users";
+import { SortSelect } from "@/components/SortSelect";
+import { byText, byTime, sortRows, thenBy, type SortOption } from "@/lib/sorting";
+import { useSortChoice } from "@/lib/useSortChoice";
 
 const actionTypeConfig: Record<AuditActionType, { icon: React.ElementType; className: string }> = {
   Payment: {
@@ -130,7 +133,22 @@ export default function AuditPage() {
     });
   }, [logs, search, typeFilter, people]);
 
-  const pagedLogs = usePagination(filteredLogs);
+  // A log reads newest first; the other orders are for finding someone's
+  // entries or one kind of action in it.
+  const sortOptions = useMemo<SortOption<AuditLogEntry>[]>(() => {
+    const newest = byTime<AuditLogEntry>((l) => l.timestamp, "desc");
+    const person = (l: AuditLogEntry) => people.get(l.user.trim().toLowerCase()) || l.user;
+    return [
+      { id: "newest", label: "Newest first", compare: newest },
+      { id: "oldest", label: "Oldest first", compare: byTime((l) => l.timestamp) },
+      { id: "person", label: "Person (A–Z)", compare: thenBy(byText(person), newest) },
+      { id: "type", label: "Action type (A–Z)", compare: thenBy(byText((l) => l.actionType), newest) },
+    ];
+  }, [people]);
+  const { option: sort, setSort } = useSortChoice("audit-log", sortOptions);
+  const sortedLogs = useMemo(() => sortRows(filteredLogs, sort.compare), [filteredLogs, sort]);
+
+  const pagedLogs = usePagination(sortedLogs);
 
   const actionTypeCounts = useMemo(
     () =>
@@ -232,6 +250,15 @@ export default function AuditPage() {
               </SelectContent>
             </Select>
             </div>
+            <SortSelect
+              options={sortOptions}
+              value={sort}
+              onChange={(id) => {
+                setSort(id);
+                pagedLogs.setPage(1);
+              }}
+              className="w-full sm:w-[200px]"
+            />
           </div>
         </CardContent>
       </Card>
@@ -245,7 +272,7 @@ export default function AuditPage() {
                 Event Log
               </CardTitle>
               <CardDescription className="text-xs text-slate-500">
-                Newest first — every entry corresponds to a real write made from this console.
+                Every entry corresponds to a real write made from this console.
               </CardDescription>
             </div>
             <Badge

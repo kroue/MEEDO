@@ -3,11 +3,12 @@
 /**
  * Settings for this PC, plus the office figures this console bills by.
  *
- * Only two kinds of thing are here. Choices about how this machine is used,
+ * Three kinds of thing are here. Choices about how this machine is used,
  * which are saved in this browser because the counter PC and the office PC
- * want different answers. And the billing figures, shown but not editable:
- * changing what a household is charged is a Board decision that belongs in a
- * reviewed change, not in a box someone can edit between customers.
+ * want different answers. The water rates, which an admin can change — each
+ * change dated from a billing month, confirmed, and kept in a visible history
+ * (components/RateSettings.tsx). And the remaining billing figures — grace
+ * payment penalty, fees — shown but set in the code.
  */
 
 import { useState, useSyncExternalStore } from "react";
@@ -24,15 +25,15 @@ import {
   UserCog,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth/AuthContext";
+import { RateSettings } from "@/components/RateSettings";
 import { ROWS_PER_PAGE_OPTIONS, type ConsolePreferences } from "@/lib/preferences";
 import { updatePreferences, usePreferences } from "@/lib/usePreferences";
 import { SKIP_INSTALL_KEY, isRunningInstalled } from "@/components/InstallGate";
 import { BARANGAYS } from "@/lib/firebase/types";
 import {
   DISCONNECTION_ELIGIBLE_DAYS,
-  EXTENSION_FEE,
   GRACE_PERIOD_DAYS,
-  OVERDUE_SURCHARGE_RATE,
+  LATE_PENALTY,
   RECONNECTION_FEE,
 } from "@/lib/billing";
 import { formatPeso } from "@/lib/utils";
@@ -221,6 +222,8 @@ export default function SettingsPage() {
         </div>
       )}
 
+      <RateSettings />
+
       <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
@@ -230,22 +233,20 @@ export default function SettingsPage() {
             </CardTitle>
           </div>
           <CardDescription className="text-xs text-slate-500">
-            Shown so nobody has to remember them. They are not editable here: changing what a
-            household is charged is a Board decision, and it is made in the code so that every
-            change to it is recorded and reviewed.
+            Shown so nobody has to remember them. Unlike the water rates above, these are set in
+            the code, so a change to them goes through a reviewed update.
           </CardDescription>
         </CardHeader>
         <CardContent>
           <dl className="grid gap-4 sm:grid-cols-2">
             {[
-              { term: "Grace period", detail: `${GRACE_PERIOD_DAYS} days before a bill is late` },
               {
-                term: "Late surcharge",
-                detail: `${(OVERDUE_SURCHARGE_RATE * 100).toFixed(0)}% once past the grace period`,
+                term: "Due date",
+                detail: `Each barangay's day below; elsewhere ${GRACE_PERIOD_DAYS} days after billing`,
               },
               {
-                term: "Extension fee",
-                detail: `${formatPeso(EXTENSION_FEE)}, once per run of unpaid bills`,
+                term: "Late payment penalty",
+                detail: `${formatPeso(LATE_PENALTY)} for each month a bill is unpaid after its due date`,
               },
               {
                 term: "Disconnection",
@@ -284,8 +285,8 @@ export default function SettingsPage() {
               })}
             </ul>
             <p className="mt-2 text-xs text-slate-500">
-              A bill issued after this month&apos;s date is due on next month&apos;s. The surcharge
-              still follows the {GRACE_PERIOD_DAYS}-day grace period above.
+              A bill issued after this month&apos;s date is due on next month&apos;s. The late
+              payment penalty starts once a bill is past its due date.
             </p>
           </div>
         </CardContent>

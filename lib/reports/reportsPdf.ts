@@ -16,6 +16,7 @@
 
 import type { jsPDF as JsPdf } from "jspdf";
 import { SYSTEM_ADDRESS, SYSTEM_TELEPHONE } from "../appInfo";
+import { hasCentavos } from "../utils";
 import type { UserOptions, autoTable as AutoTableFn } from "jspdf-autotable";
 
 type AutoTable = typeof AutoTableFn;
@@ -93,8 +94,10 @@ const ORGANIZATION = "South Wao Water System";
 
 // ── Formatting ───────────────────────────────────────────────────────────────
 
+/** Like formatPeso on screen: whole amounts without a decimal point, centavos when there are some. */
 export function formatPdfPeso(value: number): string {
-  return `PHP ${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const digits = hasCentavos(value) ? 2 : 0;
+  return `PHP ${value.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
 }
 
 function formatCount(value: number): string {

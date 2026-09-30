@@ -8,6 +8,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_RATE_CONFIG,
   calculateBill,
   consumptionFor,
   minimumChargeFor,
@@ -56,51 +57,95 @@ describe("rate card", () => {
   });
 });
 
-describe("grace period, surcharge and extension fee", () => {
-  it("charges nothing extra inside the fifteen-day grace period", () => {
+describe("late payment penalty", () => {
+  it("charges nothing extra before the unpaid bill's due date", () => {
+    // No set due day, so the bill fell due fifteen days after billing.
     const r = bill({ overdueBalance: 500, delinquentSinceMillis: NOW - 15 * DAY });
-    expect(r.pastGracePeriod).toBe(false);
-    expect(r.overdueSurcharge).toBe(0);
+    expect(r.pastDue).toBe(false);
     expect(r.extensionFee).toBe(0);
+    expect(r.overdueSurcharge).toBe(0);
     expect(r.totalAmountDue).toBe(600);
   });
 
-  it("applies surcharge and extension fee from day sixteen", () => {
+  it("adds ₱10 once the carried balance is past its due date — and no 3%", () => {
     const r = bill({ overdueBalance: 500, delinquentSinceMillis: NOW - 16 * DAY });
-    expect(r.pastGracePeriod).toBe(true);
-    expect(r.overdueSurcharge).toBe(15); // 3% of 500
+    expect(r.pastDue).toBe(true);
     expect(r.extensionFee).toBe(10);
-    expect(r.totalAmountDue).toBe(625);
+    expect(r.overdueSurcharge).toBe(0);
+    expect(r.totalAmountDue).toBe(610);
   });
 
-  it("charges the extension fee once per delinquency, not once per bill", () => {
-    const r = bill({
-      overdueBalance: 500,
-      delinquentSinceMillis: NOW - 60 * DAY,
-      extensionFeeAlreadyCharged: true,
-    });
-    expect(r.extensionFee).toBe(0);
-    expect(r.overdueSurcharge).toBe(15); // surcharge still recurs
+  it("adds ₱10 on every month's bill it stays unpaid, not just once", () => {
+    // Two months on, this bill still carries its own ₱10; last month's ₱10 is
+    // already inside the carried balance.
+    const r = bill({ overdueBalance: 610, delinquentSinceMillis: NOW - 60 * DAY });
+    expect(r.extensionFee).toBe(10);
+    expect(r.totalAmountDue).toBe(720);
+  });
+
+  it("counts from the barangay's own due day", () => {
+    // NOW is 4 September 2025 in the Philippines. Billed 5 August, a Bo-ot bill
+    // fell due on the 17th — past due. Billed 25 August, it falls due on
+    // 17 September — not yet.
+    const augustFifth = Date.UTC(2025, 7, 5, 2);
+    const augustTwentyFifth = Date.UTC(2025, 7, 25, 2);
+    expect(bill({ barangay: "BO-OT", overdueBalance: 500, delinquentSinceMillis: augustFifth }).extensionFee).toBe(10);
+    expect(bill({ barangay: "BO-OT", overdueBalance: 500, delinquentSinceMillis: augustTwentyFifth }).extensionFee).toBe(0);
   });
 
   it("invents no penalty when the delinquency start is unknown", () => {
     const r = bill({ overdueBalance: 500, delinquentSinceMillis: null });
     expect(r.daysOverdue).toBeNull();
-    expect(r.overdueSurcharge).toBe(0);
+    expect(r.extensionFee).toBe(0);
     expect(r.totalAmountDue).toBe(600);
   });
 
   it("keeps ageing a long-standing debt rather than resetting each cycle", () => {
     const r = bill({ overdueBalance: 2400, delinquentSinceMillis: NOW - 400 * DAY });
     expect(r.daysOverdue).toBe(400);
-    expect(r.pastGracePeriod).toBe(true);
+    expect(r.pastDue).toBe(true);
   });
 
   it("charges nothing extra when nothing is owed, even with a stale date", () => {
     const r = bill({ overdueBalance: 0, delinquentSinceMillis: NOW - 90 * DAY });
     expect(r.daysOverdue).toBeNull();
-    expect(r.overdueSurcharge).toBe(0);
     expect(r.extensionFee).toBe(0);
+  });
+});
+
+describe("whole pesos", () => {
+  it("bills the water in whole pesos", () => {
+    // 3 m³ at ₱10.80 is ₱32.40, billed as ₱32.
+    const r = bill({ previousReading: 0, currentReading: 13 });
+    expect(r.commodityCharge).toBe(32);
+    expect(r.totalWaterCharge).toBe(132);
+    expect(r.totalAmountDue).toBe(132);
+    expect(r.roundingAdjustment).toBe(0);
+  });
+
+  it("rounds half a peso up", () => {
+    const r = bill({
+      previousReading: 0,
+      currentReading: 11,
+      config: { ...DEFAULT_RATE_CONFIG, commodityRate: 10.5 },
+    });
+    expect(r.commodityCharge).toBe(11);
+    expect(r.totalAmountDue).toBe(111);
+  });
+
+  it("makes every line a whole peso, adding up to the amount due", () => {
+    // 7.3 m³ at ₱10.80 is ₱78.84, billed as ₱79.
+    const r = bill({ previousReading: 100, currentReading: 117.3, overdueBalance: 431, delinquentSinceMillis: NOW - 40 * DAY });
+    const lines = [r.minimumCharge, r.commodityCharge, r.overdueBalance, r.extensionFee];
+    expect(lines).toEqual([100, 79, 431, 10]);
+    expect(r.totalAmountDue).toBe(620);
+    expect(r.roundingAdjustment).toBe(0);
+  });
+
+  it("rounds off centavos a balance from before carries in", () => {
+    const r = bill({ overdueBalance: 50.4 });
+    expect(r.totalAmountDue).toBe(150);
+    expect(r.roundingAdjustment).toBe(-0.4);
   });
 });
 
@@ -149,7 +194,7 @@ describe("meter rollover", () => {
 describe("what the receipt projects", () => {
   it("matches what the next bill would carry forward", () => {
     const r = bill();
-    expect(r.projectedOverdueTotal).toBe(113); // 100 + 3% + ₱10
+    expect(r.projectedOverdueTotal).toBe(110); // ₱100 plus a month's ₱10 penalty
     expect(r.dueDateMillis).toBe(NOW + 15 * DAY);
   });
 
@@ -163,9 +208,9 @@ describe("what the receipt projects", () => {
     expect(bill({ barangay: "SALVACION" }).dueDateMillis).toBe(NOW + 15 * DAY);
   });
 
-  it("does not project the extension fee twice", () => {
+  it("projects one more month's penalty on a bill already carrying one", () => {
     const r = bill({ overdueBalance: 500, delinquentSinceMillis: NOW - 16 * DAY });
-    expect(r.projectedOverdueTotal).toBeCloseTo(625 * 1.03, 2);
+    expect(r.projectedOverdueTotal).toBe(620);
   });
 });
 
@@ -180,12 +225,12 @@ describe("correction safety", () => {
       overdueBalance: 500,
       delinquentSinceMillis: NOW - 16 * DAY,
     });
-    expect(r.chargesAdded).toBe(262 + 15 + 10);
+    expect(r.chargesAdded).toBe(262 + 10);
   });
 
-  it("rounds money to centavos", () => {
-    const r = bill({ previousReading: 0, currentReading: 13 });
-    expect(r.commodityCharge).toBe(32.4);
-    expect(r.totalAmountDue).toBe(132.4);
+  it("includes the rounding in chargesAdded, so a correction backs it out exactly", () => {
+    const r = bill({ overdueBalance: 50.4 });
+    expect(r.totalAmountDue).toBe(150); // 100 + 50.40, rounded
+    expect(r.totalAmountDue - r.chargesAdded).toBeCloseTo(50.4, 2);
   });
 });

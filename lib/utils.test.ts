@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatCompact, formatCompactPeso, getFullName } from "./utils";
+import { formatCompact, formatCompactPeso, formatPeso, getFullName } from "./utils";
 
 describe("formatCompact", () => {
   it("shows small numbers as themselves — a consumption axis is tens of m³", () => {
@@ -52,5 +52,22 @@ describe("getFullName", () => {
 
   it("falls back to a single stored name", () => {
     expect(getFullName({ name: "Barangay Health Station" })).toBe("Barangay Health Station");
+  });
+});
+
+describe("formatPeso", () => {
+  it("shows a whole amount without a decimal point", () => {
+    expect(formatPeso(376)).toBe("₱376");
+    expect(formatPeso(1250)).toBe("₱1,250");
+    expect(formatPeso(0)).toBe("₱0");
+  });
+
+  it("keeps centavos when an amount really has them", () => {
+    expect(formatPeso(10.8)).toBe("₱10.80");
+    expect(formatPeso(522.3)).toBe("₱522.30");
+  });
+
+  it("isn't fooled by float noise", () => {
+    expect(formatPeso(0.1 + 0.2 + 375.7)).toBe("₱376");
   });
 });

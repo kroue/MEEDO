@@ -153,8 +153,9 @@ describe("reportsPdfFileName", () => {
 });
 
 describe("formatPdfPeso", () => {
-  it("uses PHP with two decimals and thousands separators", () => {
+  it("uses PHP with thousands separators, and centavos only when there are some", () => {
     expect(formatPdfPeso(1234.5)).toBe("PHP 1,234.50");
-    expect(formatPdfPeso(0)).toBe("PHP 0.00");
+    expect(formatPdfPeso(1376)).toBe("PHP 1,376");
+    expect(formatPdfPeso(0)).toBe("PHP 0");
   });
 });

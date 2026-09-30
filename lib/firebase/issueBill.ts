@@ -40,6 +40,8 @@ import {
 import { logAuditEvent } from "./auditLog";
 import { getFullName } from "../utils";
 import { isAccountApproved } from "../billing";
+import { rateCardFor, toCalculatorConfig } from "../rates";
+import { fetchRateSchedule } from "./rates";
 import type { BillingSummary, Concessionaire, MonthlyBillingRecord } from "./types";
 
 const CONCESSIONAIRES = "concessionaires";
@@ -71,7 +73,8 @@ function chargesAddedBy(record: MonthlyBillingRecord | null): number {
     (record.minimumCharge ?? 0) +
     (record.commodityCharge ?? 0) +
     (record.overdueSurcharge ?? 0) +
-    (record.extensionFee ?? 0) -
+    (record.extensionFee ?? 0) +
+    (record.roundingAdjustment ?? 0) -
     (record.creditApplied ?? 0)
   );
 }
@@ -110,7 +113,10 @@ export async function previewBill(
   if (!isAccountApproved(c)) {
     throw new BillingError("This account is waiting for admin approval and can't be billed yet.");
   }
-  const window = await fetchSummaryWindow(c.id, c.billingHistory);
+  const [window, schedule] = await Promise.all([
+    fetchSummaryWindow(c.id, c.billingHistory),
+    fetchRateSchedule(),
+  ]);
   const existing = window.find((b) => b.month === monthStr) ?? null;
   const prior = window.find((b) => b.month !== monthStr) ?? null;
   const previousReading = prior?.reading ?? 0;
@@ -136,11 +142,9 @@ export async function previewBill(
     overdueBalance: priorBalance,
     delinquentSinceMillis: c.delinquentSince ? Date.parse(c.delinquentSince) : null,
     creditBalance: creditAvailable,
-    extensionFeeAlreadyCharged: window.some(
-      (b) => b.month !== monthStr && b.extensionFeeCharged === true
-    ),
     barangay: c.barangay,
     now,
+    config: toCalculatorConfig(rateCardFor(schedule, monthKeyFor(monthStr))),
   });
 
   return { billing, previousReading, replacing: existing };
@@ -168,6 +172,8 @@ export async function issueBill(input: IssueBillInput): Promise<IssueBillResult>
     throw new BillingError("This account is waiting for admin approval and can't be billed yet.");
   }
   const summaryWindow = await fetchSummaryWindow(concessionaireId, raw.billingHistory);
+  // The rates for the month being billed, which may differ from this month's.
+  const rateCard = rateCardFor(await fetchRateSchedule(), monthKeyFor(monthStr));
 
   const result = await runTransaction(db, async (transaction) => {
     const snapshot = await transaction.get(docRef);
@@ -205,11 +211,9 @@ export async function issueBill(input: IssueBillInput): Promise<IssueBillResult>
       overdueBalance: priorBalance,
       delinquentSinceMillis: Number.isNaN(delinquentSince as number) ? null : delinquentSince,
       creditBalance: creditAvailable,
-      extensionFeeAlreadyCharged: summaryWindow.some(
-        (b) => b.month !== monthStr && b.extensionFeeCharged === true
-      ),
       barangay: data.barangay,
       now: now.getTime(),
+      config: toCalculatorConfig(rateCard),
     });
 
     // Reuse the OR number on a correction rather than burning a new one.
@@ -235,9 +239,12 @@ export async function issueBill(input: IssueBillInput): Promise<IssueBillResult>
       extensionFeeCharged: billing.extensionFee > 0,
       minimumCharge: billing.minimumCharge,
       commodityCharge: billing.commodityCharge,
+      commodityRate: rateCard.commodityRate,
+      minChargeThreshold: rateCard.minChargeThreshold,
       overdueBalance: billing.overdueBalance,
       overdueSurcharge: billing.overdueSurcharge,
       extensionFee: billing.extensionFee,
+      roundingAdjustment: billing.roundingAdjustment,
       creditApplied: billing.creditApplied,
       meterRolledOver: billing.meterRolledOver,
       source: "office",

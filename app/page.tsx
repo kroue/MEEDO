@@ -1,6 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { SortSelect } from "@/components/SortSelect";
+import { byNumber, byText, byTime, sortRows, thenBy, type SortOption } from "@/lib/sorting";
+import { useSortChoice } from "@/lib/useSortChoice";
 import { useConcessionaires } from "@/lib/firebase/useConcessionaires";
 import { fetchRecentBills, fetchRecentPayments } from "@/lib/firebase/bills";
 import type { BillDocument, PaymentDocument } from "@/lib/firebase/types";
@@ -17,7 +20,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import {
   Table,
   TableBody,
@@ -224,6 +226,24 @@ export default function DashboardPage() {
     return rows.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).slice(0, 8);
   }, [concessionaires, recentPaymentDocs]);
 
+  // The same choice as the Recent Payments card on Collections: newest first
+  // unless someone picked another order there or here.
+  type RecentPayment = (typeof recentPayments)[number];
+  const paymentSorts = useMemo<SortOption<RecentPayment>[]>(() => {
+    const newest = byTime<RecentPayment>((p) => p.date, "desc");
+    return [
+      { id: "newest", label: "Newest first", compare: newest },
+      { id: "oldest", label: "Oldest first", compare: byTime((p) => p.date) },
+      { id: "name", label: "Name (A–Z)", compare: thenBy(byText((p) => p.concessionaireName), newest) },
+      { id: "amount", label: "Amount (highest first)", compare: thenBy(byNumber((p) => p.amount, "desc"), newest) },
+    ];
+  }, []);
+  const { option: paymentSort, setSort: setPaymentSort } = useSortChoice("recent-payments", paymentSorts);
+  const sortedRecentPayments = useMemo(
+    () => sortRows(recentPayments, paymentSort.compare),
+    [recentPayments, paymentSort]
+  );
+
   return (
     <div className="space-y-6 max-w-[1400px] mx-auto">
       {/* Page Header */}
@@ -381,12 +401,13 @@ export default function DashboardPage() {
                     Latest water bill payments recorded via the Collection Module
                   </CardDescription>
                 </div>
-                <Badge
-                  variant="secondary"
-                  className="bg-slate-100/80 text-slate-600 border-slate-200/50 text-[10px] font-medium"
-                >
-                  {recentPayments.length} records
-                </Badge>
+                <SortSelect
+                  options={paymentSorts}
+                  value={paymentSort}
+                  onChange={setPaymentSort}
+                  hideLabel
+                  size="sm"
+                />
               </div>
             </CardHeader>
             <div className="px-6 pb-6">
@@ -415,7 +436,7 @@ export default function DashboardPage() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {recentPayments.map((p, i) => (
+                      {sortedRecentPayments.map((p, i) => (
                         <TableRow key={`${p.orNumber}-${i}`} className="group border-slate-200/40 hover:bg-white/80 transition-colors">
                           <TableCell className="text-[13px] font-medium text-slate-900">
                             {p.concessionaireName}

@@ -14,6 +14,9 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
+import { SortSelect } from "@/components/SortSelect";
+import { byNumber, byText, byTime, sortRows, thenBy, type SortOption } from "@/lib/sorting";
+import { useSortChoice } from "@/lib/useSortChoice";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { userMessage } from "@/lib/userMessage";
@@ -214,17 +217,32 @@ export function ServiceRequestQueue({ onChanged }: { onChanged?: () => void }) {
     if (email) return subscribeToMyServiceRequests(email, onData, onError);
   }, [isAdmin, role, email]);
 
+  // Alphabetical by default, with the queue's first-come order one choice away.
+  const sortOptions = useMemo<SortOption<ServiceRequest>[]>(() => {
+    const byName = byText<ServiceRequest>((r) => r.concessionaireName);
+    return [
+      { id: "name", label: "Name (A–Z)", compare: thenBy(byName, byTime((r) => r.requestedAt)) },
+      { id: "name-desc", label: "Name (Z–A)", compare: byText((r) => r.concessionaireName, "desc") },
+      { id: "oldest", label: "Oldest first", compare: thenBy(byTime((r) => r.requestedAt), byName) },
+      { id: "newest", label: "Newest first", compare: thenBy(byTime((r) => r.requestedAt, "desc"), byName) },
+      { id: "amount", label: "Amount (highest first)", compare: thenBy(byNumber((r) => r.amount, "desc"), byName) },
+      { id: "kind", label: "Type of request", compare: thenBy(byText((r) => REQUEST_KIND_LABELS[r.kind]), byName) },
+    ];
+  }, []);
+  const { option: sort, setSort } = useSortChoice("approval-requests", sortOptions);
+
   const waiting = useMemo(
-    () => requests.filter((r) => r.status === "PENDING"),
-    [requests]
+    () => sortRows(requests.filter((r) => r.status === "PENDING"), sort.compare),
+    [requests, sort]
   );
   const outForReconnection = useMemo(
-    () => requests.filter((r) => r.status === "APPROVED"),
-    [requests]
+    () => sortRows(requests.filter((r) => r.status === "APPROVED"), sort.compare),
+    [requests, sort]
   );
+  // The most recently decided few, then put in the chosen order.
   const decided = useMemo(
-    () => requests.filter((r) => !isOpenRequest(r)).slice(0, RECENTLY_DECIDED),
-    [requests]
+    () => sortRows(requests.filter((r) => !isOpenRequest(r)).slice(0, RECENTLY_DECIDED), sort.compare),
+    [requests, sort]
   );
 
   // A queue nobody has worked for a while can get long.
@@ -276,6 +294,17 @@ export function ServiceRequestQueue({ onChanged }: { onChanged?: () => void }) {
                 {waiting.length} waiting
               </Badge>
             )}
+            <SortSelect
+              options={sortOptions}
+              value={sort}
+              onChange={(id) => {
+                setSort(id);
+                pagedWaiting.setPage(1);
+              }}
+              hideLabel
+              size="sm"
+              className="ml-auto"
+            />
           </div>
           <CardDescription className="text-xs text-slate-500">
             {isAdmin

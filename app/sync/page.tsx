@@ -2,6 +2,9 @@
 
 import { userMessage } from "@/lib/userMessage";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { SortSelect } from "@/components/SortSelect";
+import { byNumber, byText, sortRows, thenBy, type SortOption } from "@/lib/sorting";
+import { useSortChoice } from "@/lib/useSortChoice";
 import { useConcessionaires } from "@/lib/firebase/useConcessionaires";
 import { batchAssignConcessionairesForReading } from "@/lib/firebase/concessionaires";
 import {
@@ -68,6 +71,23 @@ export default function SyncPage() {
   const { concessionaires, loading, error } = useConcessionaires("all");
   const [readers, setReaders] = useState<FieldReaderUser[]>([]);
   const [readersLoaded, setReadersLoaded] = useState(false);
+  // Alphabetical by default, like every list of people in the console.
+  const readerSorts = useMemo<SortOption<FieldReaderUser>[]>(() => {
+    const byName = thenBy<FieldReaderUser>(byText((r) => r.firstName), byText((r) => r.lastName), byText((r) => r.username));
+    return [
+      { id: "name", label: "Name (A–Z)", compare: byName },
+      { id: "name-desc", label: "Name (Z–A)", compare: thenBy(byText((r) => r.firstName, "desc"), byText((r) => r.lastName, "desc")) },
+      { id: "last-name", label: "Last name (A–Z)", compare: thenBy(byText((r) => r.lastName), byText((r) => r.firstName)) },
+      { id: "username", label: "Username (A–Z)", compare: byText((r) => r.username) },
+      {
+        id: "workload",
+        label: "Most barangays assigned",
+        compare: thenBy(byNumber((r) => r.assignedBarangays.length, "desc"), byName),
+      },
+    ];
+  }, []);
+  const { option: readerSort, setSort: setReaderSort } = useSortChoice("field-readers", readerSorts);
+  const sortedReaders = useMemo(() => sortRows(readers, readerSort.compare), [readers, readerSort]);
   const [busyReaderUid, setBusyReaderUid] = useState<string | null>(null);
 
   const [createOpen, setCreateOpen] = useState(false);
@@ -594,10 +614,15 @@ export default function SyncPage() {
       )}
 
       <div>
-        <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold">
-          <Users className="h-5 w-5 text-muted-foreground" />
-          Field Readers
-        </h2>
+        <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
+          <h2 className="flex items-center gap-2 text-lg font-semibold">
+            <Users className="h-5 w-5 text-muted-foreground" />
+            Field Readers
+          </h2>
+          {readers.length > 1 && (
+            <SortSelect options={readerSorts} value={readerSort} onChange={setReaderSort} className="w-full sm:w-56" />
+          )}
+        </div>
 
         {readersLoaded && readers.length === 0 && (
           <Alert>
@@ -611,7 +636,7 @@ export default function SyncPage() {
         )}
 
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {readers.map((reader) => {
+          {sortedReaders.map((reader) => {
             const availableBarangays = BARANGAYS.filter(
               (b) => !reader.assignedBarangays.includes(b)
             );

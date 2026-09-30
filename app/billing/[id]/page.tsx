@@ -723,15 +723,11 @@ export default function ConcessionaireBillingPage() {
               </div>
               <div className="flex justify-between">
                 <span className="text-slate-500">
-                  Overdue surcharge
+                  Late payment penalty
                   {issuePreview.daysOverdue !== null && (
-                    <span className="text-[10px] text-slate-400"> · {issuePreview.daysOverdue}d</span>
+                    <span className="text-[10px] text-slate-400"> · {issuePreview.daysOverdue}d unpaid</span>
                   )}
                 </span>
-                <span className="text-slate-800">{formatPeso(issuePreview.overdueSurcharge)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Extension fee</span>
                 <span className="text-slate-800">{formatPeso(issuePreview.extensionFee)}</span>
               </div>
               {issuePreview.creditApplied > 0 && (

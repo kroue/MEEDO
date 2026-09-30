@@ -284,6 +284,19 @@ service cloud.firestore {
                && request.resource.data.lastNumber >= 1)
            );
 
+      // The water rate schedule (lib/rates.ts): what a cubic metre costs, from
+      // which billing month. An admin's to set — it decides what every
+      // household is charged — and stamped with who set it. Each entry's
+      // numbers are checked by the console before saving; here, the shape and
+      // the author. A schedule can't be deleted: bills name the rates they were
+      // worked out with, and the history is how those are explained.
+      allow create, update: if settingId == 'waterRates'
+        && isAdmin()
+        && request.resource.data.keys().hasOnly(['schedule', 'updatedBy', 'updatedAt'])
+        && request.resource.data.schedule is list
+        && request.resource.data.schedule.size() <= 240
+        && request.resource.data.updatedBy == request.auth.token.email;
+
       allow delete: if false;
     }
 

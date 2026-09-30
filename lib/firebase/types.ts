@@ -63,8 +63,26 @@ export interface MonthlyBillingRecord {
    */
   minimumCharge?: number;
   commodityCharge?: number;
+  /**
+   * The rates this bill was worked out with — ₱ per m³, and the m³ the
+   * minimum charge covers. Recorded on the bill because the rate card can
+   * change (Settings → Water rates); absent on bills from before it could.
+   */
+  commodityRate?: number;
+  minChargeThreshold?: number;
+  /**
+   * What rounding the amount due to a whole peso added or took off. Kept so
+   * the itemised lines add up to `pesoAmount`, and so a correction can back
+   * this bill's charges out exactly. Absent on bills from before rounding.
+   */
+  roundingAdjustment?: number;
   overdueBalance?: number;
+  /** The 3% late surcharge — only on bills from before the ₱10 monthly penalty replaced it. */
   overdueSurcharge?: number;
+  /**
+   * The ₱10 late payment penalty, charged on each bill while an unpaid balance
+   * is past its due date. On older bills, the one-time extension fee it replaced.
+   */
   extensionFee?: number;
   /** Advance payment applied against this bill. */
   creditApplied?: number;

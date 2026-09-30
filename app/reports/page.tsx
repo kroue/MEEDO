@@ -26,6 +26,9 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Pagination, usePagination } from "@/components/ui/pagination";
+import { SortSelect } from "@/components/SortSelect";
+import { byNumber, byText, sortRows, thenBy, type SortOption } from "@/lib/sorting";
+import { useSortChoice } from "@/lib/useSortChoice";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Table,
@@ -372,7 +375,27 @@ export default function ReportsPage() {
       .sort((a, b) => b.balance - a.balance);
   }, [concessionaires]);
 
-  const pagedDelinquents = usePagination(delinquentAccounts);
+  // Alphabetical by default. Balance order — what this list used to be fixed
+  // to — is one choice away, and the PDF follows whichever is on screen.
+  type Delinquent = (typeof delinquentAccounts)[number];
+  const delinquentSorts = useMemo<SortOption<Delinquent>[]>(() => {
+    const byName = byText<Delinquent>((a) => a.name);
+    return [
+      { id: "name", label: "Name (A–Z)", compare: byName },
+      { id: "name-desc", label: "Name (Z–A)", compare: byText((a) => a.name, "desc") },
+      { id: "balance", label: "Balance (highest first)", compare: thenBy(byNumber((a) => a.balance, "desc"), byName) },
+      { id: "overdue", label: "Longest overdue first", compare: thenBy(byNumber((a) => a.overdueDays, "desc"), byName) },
+      { id: "place", label: "Barangay", compare: thenBy(byText((a) => a.barangay), byName) },
+      { id: "meter", label: "Meter number", compare: byText((a) => a.meterNumber) },
+    ];
+  }, []);
+  const { option: delinquentSort, setSort: setDelinquentSort } = useSortChoice("delinquents", delinquentSorts);
+  const sortedDelinquents = useMemo(
+    () => sortRows(delinquentAccounts, delinquentSort.compare),
+    [delinquentAccounts, delinquentSort]
+  );
+
+  const pagedDelinquents = usePagination(sortedDelinquents);
 
   const delinquencySummary = useMemo(
     () => ({
@@ -403,7 +426,7 @@ export default function ReportsPage() {
           tierColors: TIER_COLORS,
           consumptionBrackets,
           totalAccounts: concessionaires.length,
-          delinquentAccounts,
+          delinquentAccounts: sortedDelinquents,
           delinquencySummary,
         },
         {
@@ -737,9 +760,16 @@ export default function ReportsPage() {
                 <CardTitle className="text-base font-semibold text-slate-800">
                   Delinquent Accounts
                 </CardTitle>
-                <Badge variant="secondary" className="bg-amber-50 text-amber-700 border-amber-200 text-[10px]">
-                  Sorted by balance
-                </Badge>
+                <SortSelect
+                  options={delinquentSorts}
+                  value={delinquentSort}
+                  onChange={(id) => {
+                    setDelinquentSort(id);
+                    pagedDelinquents.setPage(1);
+                  }}
+                  hideLabel
+                  size="sm"
+                />
               </div>
             </CardHeader>
             <CardContent>

@@ -27,6 +27,9 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Pagination, usePagination } from "@/components/ui/pagination";
+import { SortSelect } from "@/components/SortSelect";
+import { byNumber, byText, sortRows, thenBy, type SortOption } from "@/lib/sorting";
+import { useSortChoice } from "@/lib/useSortChoice";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -206,7 +209,26 @@ export default function BillingPage() {
     });
   }, [allBills, barangayFilter, monthFilter, search]);
 
-  const pagedBills = usePagination(filteredBills);
+  // Alphabetical by default, each name's bills newest month first.
+  const sortOptions = useMemo<SortOption<BillRow>[]>(() => {
+    const byName = byText<BillRow>((b) => b.name);
+    const newestMonth = byNumber<BillRow>((b) => monthSortKey(b.month), "desc");
+    const outstanding = (b: BillRow) => (paymentStatus(b.pesoAmount, b.amountPaid) === "PAID" ? 1 : 0);
+    return [
+      { id: "name", label: "Name (A–Z)", compare: thenBy(byName, newestMonth) },
+      { id: "name-desc", label: "Name (Z–A)", compare: thenBy(byText((b) => b.name, "desc"), newestMonth) },
+      { id: "newest", label: "Billing month (newest first)", compare: thenBy(newestMonth, byName) },
+      { id: "oldest", label: "Billing month (oldest first)", compare: thenBy(byNumber((b) => monthSortKey(b.month)), byName) },
+      { id: "amount", label: "Amount due (highest first)", compare: thenBy(byNumber((b) => b.pesoAmount, "desc"), byName) },
+      { id: "consumption", label: "Consumption (highest first)", compare: thenBy(byNumber((b) => b.consumption, "desc"), byName) },
+      { id: "unpaid", label: "Unpaid first", compare: thenBy(byNumber(outstanding), byName, newestMonth) },
+      { id: "meter", label: "Meter number", compare: thenBy(byText((b) => b.meterNumber), newestMonth) },
+    ];
+  }, []);
+  const { option: sort, setSort } = useSortChoice("billing", sortOptions);
+  const sortedBills = useMemo(() => sortRows(filteredBills, sort.compare), [filteredBills, sort]);
+
+  const pagedBills = usePagination(sortedBills);
 
   // Water sold, not bill totals: each bill's `pesoAmount` already folds in the
   // prior unpaid balance, so summing it counts the same debt once per month it
@@ -357,6 +379,16 @@ export default function BillingPage() {
                 </SelectContent>
               </Select>
             </div>
+
+            <SortSelect
+              options={sortOptions}
+              value={sort}
+              onChange={(id) => {
+                setSort(id);
+                pagedBills.setPage(1);
+              }}
+              className="w-full sm:w-56"
+            />
           </div>
         </CardContent>
       </Card>
@@ -366,7 +398,7 @@ export default function BillingPage() {
         <CardHeader>
           <CardTitle className="text-base font-semibold text-slate-800">Reads &amp; Bills</CardTitle>
           <CardDescription className="text-xs text-slate-500">
-            Newest first. Tap a name to see that concessionaire&rsquo;s full billing history.
+            Tap a name to see that concessionaire&rsquo;s full billing history.
           </CardDescription>
         </CardHeader>
         <CardContent>

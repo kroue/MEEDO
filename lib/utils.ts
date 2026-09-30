@@ -5,11 +5,24 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
+/** True when an amount has centavos, once float noise is rounded off. */
+export function hasCentavos(value: number): boolean {
+  return !Number.isInteger(Math.round(value * 100) / 100);
+}
+
+/**
+ * Pesos as the office writes them. Bills are in whole pesos, so a whole
+ * amount shows without a decimal point — ₱376, not ₱376.00. An amount that
+ * really has centavos (a rate per m³, a balance from before bills were
+ * rounded) keeps them, so nothing is rounded away on screen.
+ */
 export function formatPeso(value: number) {
+  const digits = hasCentavos(value) ? 2 : 0;
   return new Intl.NumberFormat("en-PH", {
     style: "currency",
     currency: "PHP",
-    minimumFractionDigits: 2,
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
   }).format(value);
 }
 

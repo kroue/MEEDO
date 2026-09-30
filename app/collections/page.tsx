@@ -13,6 +13,9 @@ import {
 } from "@/lib/firebase/requests";
 import { orNumberProblem } from "@/lib/receipts";
 import { subscribeToBills, subscribeToRecentPayments } from "@/lib/firebase/bills";
+import { SortSelect } from "@/components/SortSelect";
+import { byNumber, byText, byTime, sortRows, thenBy, type SortOption } from "@/lib/sorting";
+import { useSortChoice } from "@/lib/useSortChoice";
 import type { MonthlyBillingRecord, PaymentDocument, ServiceRequest } from "@/lib/firebase/types";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { getFullName, formatPeso } from "@/lib/utils";
@@ -107,13 +110,14 @@ export default function CollectionsPage() {
   const searchResults = useMemo(() => {
     if (search.trim().length < 2) return [];
     const q = search.trim().toLowerCase();
-    return concessionaires.filter(
+    const matches = concessionaires.filter(
       (c) =>
         // A payment can't be taken on an account an admin hasn't approved.
         isAccountApproved(c) &&
         (getFullName(c).toLowerCase().includes(q) ||
           (c.accountNumber ?? "").toLowerCase().includes(q))
     );
+    return sortRows(matches, byText((c) => getFullName(c)));
   }, [concessionaires, search]);
 
   const handleSelect = (c: Concessionaire) => {
@@ -275,6 +279,20 @@ export default function CollectionsPage() {
     });
     return rows.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).slice(0, 15);
   }, [concessionaires, feedPayments]);
+
+  // A feed of the latest payments, so it opens newest first; A–Z and amount
+  // are there for finding one in it.
+  const feedSorts = useMemo<SortOption<PaymentFeedRow>[]>(() => {
+    const newest = byTime<PaymentFeedRow>((p) => p.date, "desc");
+    return [
+      { id: "newest", label: "Newest first", compare: newest },
+      { id: "oldest", label: "Oldest first", compare: byTime((p) => p.date) },
+      { id: "name", label: "Name (A–Z)", compare: thenBy(byText((p) => p.concessionaireName), newest) },
+      { id: "amount", label: "Amount (highest first)", compare: thenBy(byNumber((p) => p.amount, "desc"), newest) },
+    ];
+  }, []);
+  const { option: feedSort, setSort: setFeedSort } = useSortChoice("recent-payments", feedSorts);
+  const sortedPayments = useMemo(() => sortRows(recentPayments, feedSort.compare), [recentPayments, feedSort]);
 
   return (
     <div className="space-y-6">
@@ -604,12 +622,17 @@ export default function CollectionsPage() {
         <div className="lg:col-span-2">
           <Card>
             <CardHeader>
-              <CardTitle className="text-base font-semibold text-slate-800">
-                Recent Payments
-              </CardTitle>
-              <CardDescription className="text-xs text-slate-500">
-                Latest water bill payments recorded, across all concessionaires.
-              </CardDescription>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <CardTitle className="text-base font-semibold text-slate-800">
+                    Recent Payments
+                  </CardTitle>
+                  <CardDescription className="text-xs text-slate-500">
+                    Latest water bill payments recorded, across all concessionaires.
+                  </CardDescription>
+                </div>
+                <SortSelect options={feedSorts} value={feedSort} onChange={setFeedSort} hideLabel size="sm" />
+              </div>
             </CardHeader>
             <CardContent>
               {feedError && (
@@ -624,7 +647,7 @@ export default function CollectionsPage() {
                 </div>
               ) : (
                 <div className="space-y-3">
-                  {recentPayments.map((payment, i) => (
+                  {sortedPayments.map((payment, i) => (
                     <div
                       key={`${payment.orNumber}-${i}`}
                       className="flex items-center justify-between rounded-lg border border-slate-100 bg-slate-50/50 p-3"

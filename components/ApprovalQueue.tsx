@@ -2,6 +2,9 @@
 
 import { userMessage } from "@/lib/userMessage";
 import { useEffect, useMemo, useState } from "react";
+import { SortSelect } from "@/components/SortSelect";
+import { byText, byTime, sortRows, thenBy, type SortOption } from "@/lib/sorting";
+import { useSortChoice } from "@/lib/useSortChoice";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth/AuthContext";
 import {
@@ -143,23 +146,37 @@ export function ApprovalQueue({ onChanged }: { onChanged?: () => void }) {
 
   const mine = (a: Concessionaire) => isAdmin || a.approvalRequestedBy === email;
 
+  // Alphabetical by default; the queue's own first-come order is one choice away.
+  const sortOptions = useMemo<SortOption<Concessionaire>[]>(() => {
+    const byName = byText<Concessionaire>((a) => getFullName(a));
+    return [
+      { id: "name", label: "Name (A–Z)", compare: byName },
+      { id: "name-desc", label: "Name (Z–A)", compare: byText((a) => getFullName(a), "desc") },
+      { id: "oldest", label: "Oldest request first", compare: thenBy(byTime((a) => a.approvalRequestedAt), byName) },
+      { id: "newest", label: "Newest request first", compare: thenBy(byTime((a) => a.approvalRequestedAt, "desc"), byName) },
+      { id: "place", label: "Barangay", compare: thenBy(byText((a) => a.barangay), byName) },
+    ];
+  }, []);
+  const { option: sort, setSort } = useSortChoice("approval-accounts", sortOptions);
+
   const pending = useMemo(
-    () =>
-      accounts
-        .filter((a) => a.approvalStatus === "PENDING" && mine(a))
-        .sort((a, b) => (a.approvalRequestedAt ?? "").localeCompare(b.approvalRequestedAt ?? "")),
+    () => sortRows(accounts.filter((a) => a.approvalStatus === "PENDING" && mine(a)), sort.compare),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [accounts, isAdmin, email]
+    [accounts, isAdmin, email, sort]
   );
 
+  // The five decided most recently, then put in the chosen order.
   const rejected = useMemo(
     () =>
-      accounts
-        .filter((a) => a.approvalStatus === "REJECTED" && mine(a))
-        .sort((a, b) => (b.approvalReviewedAt ?? "").localeCompare(a.approvalReviewedAt ?? ""))
-        .slice(0, 5),
+      sortRows(
+        accounts
+          .filter((a) => a.approvalStatus === "REJECTED" && mine(a))
+          .sort((a, b) => (b.approvalReviewedAt ?? "").localeCompare(a.approvalReviewedAt ?? ""))
+          .slice(0, 5),
+        sort.compare
+      ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [accounts, isAdmin, email]
+    [accounts, isAdmin, email, sort]
   );
 
   if (!role || (pending.length === 0 && rejected.length === 0 && !loadError)) return null;
@@ -219,6 +236,7 @@ export function ApprovalQueue({ onChanged }: { onChanged?: () => void }) {
               {pending.length} pending
             </Badge>
           )}
+          <SortSelect options={sortOptions} value={sort} onChange={setSort} hideLabel size="sm" className="ml-auto" />
         </div>
         <CardDescription className="text-xs text-slate-500">
           {isAdmin

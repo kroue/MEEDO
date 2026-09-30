@@ -1,7 +1,7 @@
 "use client";
 
 import { userMessage } from "@/lib/userMessage";
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   subscribeToConsoleUsers,
   updateConsoleUserDetails,
@@ -53,6 +53,9 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Pagination, usePagination } from "@/components/ui/pagination";
+import { SortSelect } from "@/components/SortSelect";
+import { byNumber, byText, sortRows, thenBy, type SortOption } from "@/lib/sorting";
+import { useSortChoice } from "@/lib/useSortChoice";
 
 const ROLE_BADGE_STYLES: Record<"admin" | "staff", string> = {
   admin: "bg-sky-50 text-sky-700 border-sky-200",
@@ -64,7 +67,21 @@ export default function TeamPage() {
   const actorEmail = user?.email ?? "unknown";
 
   const [users, setUsers] = useState<ConsoleUser[]>([]);
-  const pagedUsers = usePagination(users);
+  // Alphabetical by default, like every list of people in the console.
+  const sortOptions = useMemo<SortOption<ConsoleUser>[]>(() => {
+    const byName = thenBy<ConsoleUser>(byText((u) => u.firstName), byText((u) => u.lastName), byText((u) => u.email));
+    return [
+      { id: "name", label: "Name (A–Z)", compare: byName },
+      { id: "name-desc", label: "Name (Z–A)", compare: thenBy(byText((u) => u.firstName, "desc"), byText((u) => u.lastName, "desc")) },
+      { id: "last-name", label: "Last name (A–Z)", compare: thenBy(byText((u) => u.lastName), byText((u) => u.firstName)) },
+      { id: "role", label: "Admins first", compare: thenBy(byText((u) => u.role), byName) },
+      { id: "email", label: "Email (A–Z)", compare: byText((u) => u.email) },
+      { id: "active", label: "Active accounts first", compare: thenBy(byNumber((u) => (u.disabled ? 1 : 0)), byName) },
+    ];
+  }, []);
+  const { option: sort, setSort } = useSortChoice("team", sortOptions);
+  const sortedUsers = useMemo(() => sortRows(users, sort.compare), [users, sort]);
+  const pagedUsers = usePagination(sortedUsers);
   const [loaded, setLoaded] = useState(false);
 
   const [createOpen, setCreateOpen] = useState(false);
@@ -507,6 +524,20 @@ export default function TeamPage() {
           </form>
         </DialogContent>
       </Dialog>
+
+      {loaded && users.length > 1 && (
+        <div className="flex justify-end">
+          <SortSelect
+            options={sortOptions}
+            value={sort}
+            onChange={(id) => {
+              setSort(id);
+              pagedUsers.setPage(1);
+            }}
+            className="w-full sm:w-56"
+          />
+        </div>
+      )}
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
         {!loaded ? (
